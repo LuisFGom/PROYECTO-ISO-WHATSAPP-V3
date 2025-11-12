@@ -30,6 +30,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // 🔥 NUEVO: Track si es la primera vez que enviamos mensaje a este contacto
   const [hasExistingMessages, setHasExistingMessages] = useState(false);
 
+  // 1. Efecto para cargar historial y configurar listeners de Socket
   useEffect(() => {
     loadChatHistory();
     
@@ -39,6 +40,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     socketService.onTypingStop(handleTypingStop);
 
     return () => {
+      // Limpieza al desmontar el componente o cambiar contactId
       socketService.stopTyping(contactId);
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
@@ -46,9 +48,15 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, [contactId]);
 
+  // 2. Efecto para SCROLL AUTOMÁTICO (al cargar o al recibir/enviar un mensaje)
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, isLoading]); // Se incluye isLoading para asegurar el scroll después de la carga inicial
+
+  const scrollToBottom = () => {
+    // Scroll con comportamiento 'smooth' para una mejor experiencia
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const loadChatHistory = async () => {
     try {
@@ -61,6 +69,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       // 🔥 NUEVO: Determinar si ya existían mensajes con este contacto
       setHasExistingMessages(history.length > 0);
       
+      // Marcar mensajes como leídos después de cargar el historial
       await socketService.markChatMessagesAsRead(contactId);
     } catch (error) {
       console.error('Error al cargar historial:', error);
@@ -70,20 +79,24 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   const handleNewMessage = (message: EncryptedMessage) => {
+    // Asegurar que el mensaje pertenece a este chat (enviado o recibido)
     if (
       (message.sender_id === contactId && message.receiver_id === user?.id) ||
       (message.sender_id === user?.id && message.receiver_id === contactId)
     ) {
       setMessages(prev => [...prev, message]);
       
+      // Marcar como leído si el mensaje fue enviado por el contacto actual
       if (message.sender_id === contactId) {
-        socketService.markChatMessagesAsRead(contactId);
+        // Se ejecuta sin esperar el resultado para no bloquear
+        void socketService.markChatMessagesAsRead(contactId);
       }
     }
   };
 
   const handleMessagesRead = (data: { readBy: number }) => {
     if (data.readBy === contactId) {
+      // Marcar como leídos solo los mensajes que yo envié a este contacto
       setMessages(prev =>
         prev.map(msg =>
           msg.sender_id === user?.id && msg.receiver_id === contactId
@@ -112,6 +125,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (e.target.value.length > 0) {
       socketService.startTyping(contactId);
 
+      // Reiniciar el temporizador para detener el "escribiendo..."
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
       }
@@ -120,7 +134,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         socketService.stopTyping(contactId);
       }, 2000);
     } else {
+      // Detener inmediatamente si el campo está vacío
       socketService.stopTyping(contactId);
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
     }
   };
 
@@ -132,18 +151,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const messageText = newMessage.trim();
     setNewMessage('');
     setIsSending(true);
-    socketService.stopTyping(contactId);
+    socketService.stopTyping(contactId); // Detener typing al enviar
 
     try {
       const sentMessage = await socketService.sendEncryptedMessage(contactId, messageText);
       setMessages(prev => [...prev, sentMessage]);
       
-      // 🔥 CORRECCIÓN: Solo actualizar conversaciones si es un contacto NUEVO
+      // 🔥 CORRECCIÓN Lógica: Determinar si se debe notificar la creación de una NUEVA conversación
       if (onMessageSent) {
+        // Es nueva conversación si NO había mensajes existentes Y la lista *actual* (antes de este mensaje) estaba vacía.
         const isNewConversation = !hasExistingMessages && messages.length === 0;
         onMessageSent(isNewConversation);
         
-        // Si es el primer mensaje, actualizar el estado
+        // Si es el primer mensaje, actualizar el estado local para futuros envíos.
         if (isNewConversation) {
           setHasExistingMessages(true);
         }
@@ -154,10 +174,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     } finally {
       setIsSending(false);
     }
-  };
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
   const formatMessageTime = (timestamp: Date) => {
@@ -269,7 +285,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                         {formatMessageTime(message.timestamp)}
                       </span>
                       {isOwnMessage && (
-                        <span className={`text-xs ${message.is_read ? 'text-blue-500' : 'text-gray-500'}`}>
+                        <span 
+                          className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`} // 🔥 CAMBIO AQUÍ: color más fuerte
+                        >
                           {message.is_read ? '✓✓' : '✓'}
                         </span>
                       )}
@@ -278,7 +296,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 </div>
               );
             })}
-            <div ref={messagesEndRef} />
+            <div ref={messagesEndRef} /> {/* Referencia para el scroll */}
           </div>
         )}
       </div>

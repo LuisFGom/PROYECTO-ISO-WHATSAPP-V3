@@ -1,14 +1,19 @@
 // frontend/src/presentation/components/ChatList.tsx
 import type { Conversation } from '../hooks/useConversations';
 
+// 🔥 CORRECCIÓN CLAVE: La prop ahora acepta string | number | null para ser compatible con HomePage.tsx
 interface ChatListProps {
   conversations: Conversation[];
   onConversationClick: (conversation: Conversation) => void;
+  // ID de la conversación actualmente seleccionada
+  // NOTA: Usaremos el ID del contacto (contact.user_id) para la comparación.
+  selectedConversationId: string | number | null;
 }
 
 export const ChatList = ({
   conversations,
   onConversationClick,
+  selectedConversationId,
 }: ChatListProps) => {
   if (conversations.length === 0) {
     return (
@@ -42,7 +47,7 @@ export const ChatList = ({
     return date.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' });
   };
 
-  // 🔥 CORREGIDO: Formatear el preview del último mensaje con "Tú:"
+  // Formatear el preview del último mensaje con "Tú:"
   const formatLastMessagePreview = (conversation: Conversation) => {
     const { last_message } = conversation;
 
@@ -50,40 +55,63 @@ export const ChatList = ({
       return 'Sin mensajes';
     }
 
-    if (last_message.preview.startsWith('Tú: ')) {
-      return last_message.preview;
-    }
-
     const isOwnMessage =
       last_message.preview.includes('✓') ||
       conversation.last_message.is_own_message;
 
-    if (isOwnMessage && !last_message.preview.startsWith('Tú: ')) {
-      return `Tú: ${last_message.preview}`;
+    let preview = last_message.preview;
+
+    // Remover el "Tú: " si ya está, para reañadirlo condicionalmente y limpiar
+    if (preview.startsWith('Tú: ')) {
+        preview = preview.substring(4); 
     }
 
-    return last_message.preview;
+    if (isOwnMessage) {
+      return `Tú: ${preview}`;
+    }
+
+    return preview;
   };
 
   return (
     <div className="divide-y divide-gray-200">
       {conversations.map((conversation) => {
+        // --- LÓGICA DE COMPARACIÓN (SEGURA) ---
+        // Convertimos ambos IDs a número para asegurar una comparación estricta,
+        // sin importar si vienen como string o number del estado padre.
+        const contactId = Number(conversation.contact.user_id);
+        const selectedId = selectedConversationId !== null ? Number(selectedConversationId) : null;
+        
+        const isSelected = contactId === selectedId;
+        // --- FIN LÓGICA DE COMPARACIÓN ---
+
+
+        // LÍNEA 1: Definimos las clases base de padding (vertical y derecha)
+        // Manteniendo un padding izquierdo de 16px (p-4)
+        const basePaddingClass = 'py-4 pr-4 pl-4'; // <-- Cambiado para incluir pl-4
+
+        // LÍNEA 2: Ajustamos 'selectedClass'
+        const selectedClass = isSelected 
+          // Cuando SÍ está seleccionado: SOLO fondo celeste. NO hay borde izquierdo y el padding queda en pl-4
+          ? 'bg-blue-100/50' 
+          // Cuando NO está seleccionado: Fondo hover normal y padding de pl-4.
+          : 'hover:bg-gray-50'; 
+
         // clases condicionales para el avatar/initial
         const isOnline = !!conversation.contact.is_online;
         const avatarWrapperBg = isOnline ? 'bg-whatsapp-green' : 'bg-gray-300';
         const initialTextColor = isOnline ? 'text-white' : 'text-gray-700';
 
+        // Usamos contact.user_id en el key para asegurar la unicidad
         return (
           <div
-            key={conversation.conversation_id}
+            key={conversation.contact.user_id}
             onClick={() => onConversationClick(conversation)}
-            className="flex items-center p-4 hover:bg-gray-50 cursor-pointer transition"
+            // LÍNEA 3: Aplicamos la combinación de clases.
+            // Eliminamos border-l-4 y el ajuste de padding.
+            className={`flex items-center cursor-pointer transition ${basePaddingClass} ${selectedClass}`}
           >
-            {/* AVATAR: ahora sin círculo indicador.
-                - Si no hay avatar_url mostramos la letra sobre fondo que cambia con is_online
-                - Si hay avatar_url mostramos la imagen (la imagen ocupa todo el círculo);
-                  el fondo seguirá cambiando pero la imagen cubrirá el fondo en la mayoría de casos.
-            */}
+            {/* AVATAR */}
             <div className="relative flex-shrink-0">
               <div
                 className={`relative w-12 h-12 rounded-full overflow-hidden flex items-center justify-center ${avatarWrapperBg}`}
