@@ -36,41 +36,39 @@ export class MySQLUserRepository implements IUserRepository {
   }
 
   async create(userData: CreateUserData): Promise<User> {
-  const sql = `
-    INSERT INTO users (username, email, password_hash, avatar_url, status, about)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `;
-  
-  try {
-    const result = await database.query(sql, [
-      userData.username,
-      userData.email,
-      userData.passwordHash,
-      userData.avatarUrl || null,
-      userData.status || UserStatus.OFFLINE,
-      userData.about || 'Hey there! I am using WhatsApp Clone',
-    ]);
-
-    // result es un array: [ResultSetHeader, FieldPacket[]]
-    // ResultSetHeader tiene la propiedad insertId
-    const resultSetHeader: any = Array.isArray(result) ? result[0] : result;
-    const insertId = resultSetHeader.insertId;
-
-    if (!insertId) {
-      throw new Error('Failed to get insert ID');
-    }
-
-    const newUser = await this.findById(insertId);
-    if (!newUser) {
-      throw new Error('Failed to retrieve created user');
-    }
+    const sql = `
+      INSERT INTO users (username, email, password_hash, avatar_url, status, about)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
     
-    return newUser;
-  } catch (error) {
-    console.error('Error creating user:', error);
-    throw error;
+    try {
+      const result = await database.query(sql, [
+        userData.username,
+        userData.email,
+        userData.passwordHash,
+        userData.avatarUrl || null,
+        userData.status || UserStatus.OFFLINE,
+        userData.about || 'Hey there! I am using WhatsApp Clone',
+      ]);
+
+      const resultSetHeader: any = Array.isArray(result) ? result[0] : result;
+      const insertId = resultSetHeader.insertId;
+
+      if (!insertId) {
+        throw new Error('Failed to get insert ID');
+      }
+
+      const newUser = await this.findById(insertId);
+      if (!newUser) {
+        throw new Error('Failed to retrieve created user');
+      }
+      
+      return newUser;
+    } catch (error) {
+      console.error('Error creating user:', error);
+      throw error;
+    }
   }
-}
 
   async findById(id: number): Promise<User | null> {
     const sql = 'SELECT * FROM users WHERE id = ?';
@@ -137,14 +135,28 @@ export class MySQLUserRepository implements IUserRepository {
     return this.findById(id);
   }
 
+  /**
+   * 🔥 CRÍTICO: Actualizar estado del usuario (online/offline)
+   */
   async updateStatus(id: number, status: UserStatus): Promise<void> {
+    const idNum = Number(id);
+    
+    console.log(`🔄 Actualizando estado: userId=${idNum}, status=${status}`);
+
     const sql = 'UPDATE users SET status = ?, updated_at = NOW() WHERE id = ?';
-    await database.query(sql, [status, id]);
+    await database.query(sql, [status, idNum]);
+
+    console.log(`✅ Estado actualizado: userId=${idNum} -> ${status}`);
   }
 
+  /**
+   * 🔥 CRÍTICO: Actualizar último visto
+   */
   async updateLastSeen(id: number): Promise<void> {
+    const idNum = Number(id);
+    
     const sql = 'UPDATE users SET last_seen = NOW(), updated_at = NOW() WHERE id = ?';
-    await database.query(sql, [id]);
+    await database.query(sql, [idNum]);
   }
 
   async delete(id: number): Promise<boolean> {

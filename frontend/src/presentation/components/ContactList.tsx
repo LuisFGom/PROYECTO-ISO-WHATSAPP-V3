@@ -110,9 +110,9 @@ export const ContactList = ({
                       </span>
                     )}
                   </div>
-                  {/* Indicador online */}
+                  {/* 🔥 CORRECCIÓN: Indicador online - POSICIÓN CORREGIDA */}
                   {contact.user.status === 'online' && (
-                    <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full"></div>
+                    <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-white rounded-full transform translate-x-1/2 translate-y-1/2"></div>
                   )}
                 </div>
 

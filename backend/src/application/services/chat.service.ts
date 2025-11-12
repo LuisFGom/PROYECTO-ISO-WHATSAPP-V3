@@ -1,5 +1,6 @@
 // backend/src/application/services/chat.service.ts
 import { MessageRepository, CreateMessageDTO, Message } from '../../domain/repositories/message.repository';
+import { ConversationRepository } from '../../domain/repositories/conversation.repository';
 import { EncryptionService } from '../../infrastructure/services/encryption.service';
 
 export interface SendMessageDTO {
@@ -15,12 +16,15 @@ export interface DecryptedMessage extends Omit<Message, 'encrypted_content' | 'i
 export class ChatService {
   private encryptionService: EncryptionService;
 
-  constructor(private messageRepository: MessageRepository) {
+  constructor(
+    private messageRepository: MessageRepository,
+    private conversationRepository: ConversationRepository
+  ) {
     this.encryptionService = new EncryptionService();
   }
 
   /**
-   * Enviar un mensaje (lo encripta antes de guardar)
+   * Enviar un mensaje (lo encripta antes de guardar y actualiza conversación)
    */
   async sendMessage(data: SendMessageDTO): Promise<DecryptedMessage> {
     // Validaciones
@@ -44,6 +48,19 @@ export class ChatService {
     };
 
     const message = await this.messageRepository.create(messageData);
+
+    // 🔥 NUEVO: Crear/Actualizar conversación
+    await this.conversationRepository.createOrUpdate(
+      data.senderId,
+      data.receiverId,
+      message.id
+    );
+
+    // 🔥 NUEVO: Incrementar contador de no leídos para el receptor
+    await this.conversationRepository.incrementUnreadCount(
+      data.receiverId,
+      data.senderId
+    );
 
     // Retornar mensaje desencriptado para el cliente
     return this.decryptMessage(message);
@@ -70,10 +87,13 @@ export class ChatService {
   }
 
   /**
-   * Marcar mensajes como leídos
+   * Marcar mensajes como leídos y resetear contador
    */
   async markMessagesAsRead(receiverId: number, senderId: number): Promise<void> {
     await this.messageRepository.markAsRead(receiverId, senderId);
+    
+    // 🔥 NUEVO: Resetear contador de no leídos
+    await this.conversationRepository.resetUnreadCount(receiverId, senderId);
   }
 
   /**
@@ -116,4 +136,3 @@ export class ChatService {
     }
   }
 }
-

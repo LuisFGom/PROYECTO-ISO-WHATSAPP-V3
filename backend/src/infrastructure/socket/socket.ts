@@ -3,13 +3,17 @@ import { Server } from 'socket.io';
 import type { Server as HTTPServer } from 'http';
 import { config } from '../../config/environment';
 import { MessageRepository } from '../../domain/repositories/message.repository';
+import { ConversationRepository } from '../../domain/repositories/conversation.repository';
+import { MySQLUserRepository } from '../database/repositories/MySQLUserRepository';
 import { ChatService } from '../../application/services/chat.service';
 import { database } from '../database/mysql/connection';
+import { UserStatus } from '../../shared/types/user.types';
 
 export class SocketService {
   private io: Server;
-  private connectedUsers: Map<number, string> = new Map(); // userId -> socketId
+  private connectedUsers: Map<number, string> = new Map();
   private chatService: ChatService;
+  private userRepository: MySQLUserRepository;
 
   constructor(httpServer: HTTPServer) {
     const allowedOrigins = [
@@ -27,9 +31,11 @@ export class SocketService {
       },
     });
 
-    // 🔥 Inicializar servicio de chat
-    const messageRepository = new MessageRepository(database.getPool());
-    this.chatService = new ChatService(messageRepository);
+    const pool = database.getPool();
+    const messageRepository = new MessageRepository(pool);
+    const conversationRepository = new ConversationRepository(pool);
+    this.userRepository = new MySQLUserRepository();
+    this.chatService = new ChatService(messageRepository, conversationRepository);
 
     this.initialize();
   }
@@ -38,18 +44,21 @@ export class SocketService {
     this.io.on('connection', (socket) => {
       console.log('✅ Usuario conectado:', socket.id);
 
-      // 🔐 Autenticación del usuario
-      socket.on('authenticate', (userId: number) => {
+      socket.on('authenticate', async (userId: number) => {
         console.log(`🔐 Usuario ${userId} autenticado con socket ${socket.id}`);
         this.connectedUsers.set(userId, socket.id);
+        
+        try {
+          await this.userRepository.updateStatus(userId, UserStatus.ONLINE);
+          console.log(`✅ Usuario ${userId} marcado como ONLINE en BD`);
+        } catch (error) {
+          console.error(`❌ Error al actualizar estado de usuario ${userId}:`, error);
+        }
         
         socket.emit('authenticated', { userId, socketId: socket.id });
         this.io.emit('user:online', { userId });
       });
 
-      // ==================== EVENTOS EXISTENTES (NO MODIFICADOS) ====================
-      
-      // 📨 Enviar mensaje (tu evento actual - MANTENER)
       socket.on('message:send', (data: {
         from: number;
         to: number;
@@ -70,7 +79,6 @@ export class SocketService {
         socket.emit('message:sent', { success: true, data });
       });
 
-      // ⌨️ Usuario escribiendo (tu evento actual - MANTENER)
       socket.on('typing:start', (data: { from: number; to: number }) => {
         const recipientSocketId = this.connectedUsers.get(data.to);
         if (recipientSocketId) {
@@ -85,7 +93,6 @@ export class SocketService {
         }
       });
 
-      // ✅ Mensaje leído (tu evento actual - MANTENER)
       socket.on('message:read', (data: { messageId: number; userId: number }) => {
         const recipientSocketId = this.connectedUsers.get(data.userId);
         if (recipientSocketId) {
@@ -93,9 +100,6 @@ export class SocketService {
         }
       });
 
-      // ==================== NUEVOS EVENTOS DE CHAT ENCRIPTADO ====================
-
-      // 💬 Enviar mensaje encriptado (NUEVO)
       socket.on('chat:send-message', async (data: {
         receiverId: number;
         content: string;
@@ -107,17 +111,14 @@ export class SocketService {
             return callback({ success: false, error: 'No autenticado' });
           }
 
-          // Guardar mensaje encriptado en BD
           const message = await this.chatService.sendMessage({
             senderId: userId,
             receiverId: data.receiverId,
             content: data.content
           });
 
-          // Confirmar al emisor
           callback({ success: true, message });
 
-          // Emitir al receptor en tiempo real
           const recipientSocketId = this.connectedUsers.get(data.receiverId);
           if (recipientSocketId) {
             this.io.to(recipientSocketId).emit('chat:new-message', message);
@@ -130,7 +131,6 @@ export class SocketService {
         }
       });
 
-      // 📜 Cargar historial de chat (NUEVO)
       socket.on('chat:load-history', async (data: {
         contactId: number;
         limit?: number;
@@ -143,13 +143,27 @@ export class SocketService {
             return callback({ success: false, error: 'No autenticado' });
           }
 
+          const contactId = parseInt(String(data.contactId), 10);
+          const limit = data.limit ? parseInt(String(data.limit), 10) : 50;
+          const offset = data.offset ? parseInt(String(data.offset), 10) : 0;
+
+          if (isNaN(contactId) || isNaN(limit) || isNaN(offset)) {
+            return callback({ 
+              success: false, 
+              error: 'Parámetros inválidos' 
+            });
+          }
+
+          console.log(`📜 Cargando historial: userId=${userId}, contactId=${contactId}, limit=${limit}, offset=${offset}`);
+
           const messages = await this.chatService.getChatHistory(
             userId,
-            data.contactId,
-            data.limit || 50,
-            data.offset || 0
+            contactId,
+            limit,
+            offset
           );
 
+          console.log(`✅ Historial cargado: ${messages.length} mensajes`);
           callback({ success: true, messages });
         } catch (error: any) {
           console.error('❌ Error al cargar historial:', error);
@@ -157,7 +171,6 @@ export class SocketService {
         }
       });
 
-      // ✅ Marcar mensajes como leídos (NUEVO)
       socket.on('chat:mark-as-read', async (data: {
         senderId: number;
       }, callback) => {
@@ -170,7 +183,6 @@ export class SocketService {
 
           await this.chatService.markMessagesAsRead(userId, data.senderId);
 
-          // Notificar al remitente que sus mensajes fueron leídos
           const senderSocketId = this.connectedUsers.get(data.senderId);
           if (senderSocketId) {
             this.io.to(senderSocketId).emit('chat:messages-read', {
@@ -185,7 +197,6 @@ export class SocketService {
         }
       });
 
-      // 🗑️ Eliminar mensaje (NUEVO)
       socket.on('chat:delete-message', async (data: {
         messageId: number;
       }, callback) => {
@@ -206,7 +217,6 @@ export class SocketService {
         }
       });
 
-      // 📊 Obtener mensajes no leídos (NUEVO)
       socket.on('chat:get-unread-count', async (data: {
         senderId?: number;
       }, callback) => {
@@ -225,8 +235,7 @@ export class SocketService {
         }
       });
 
-      // 🔌 Desconexión
-      socket.on('disconnect', () => {
+      socket.on('disconnect', async () => {
         console.log('❌ Usuario desconectado:', socket.id);
         
         let disconnectedUserId: number | null = null;
@@ -239,13 +248,20 @@ export class SocketService {
         }
         
         if (disconnectedUserId) {
+          try {
+            await this.userRepository.updateStatus(disconnectedUserId, UserStatus.OFFLINE);
+            await this.userRepository.updateLastSeen(disconnectedUserId);
+            console.log(`✅ Usuario ${disconnectedUserId} marcado como OFFLINE en BD`);
+          } catch (error) {
+            console.error(`❌ Error al actualizar estado de usuario ${disconnectedUserId}:`, error);
+          }
+          
           this.io.emit('user:offline', { userId: disconnectedUserId });
         }
       });
     });
   }
 
-  // 🔍 Obtener userId por socketId
   private getUserIdBySocketId(socketId: string): number | null {
     for (const [userId, sid] of this.connectedUsers.entries()) {
       if (sid === socketId) {

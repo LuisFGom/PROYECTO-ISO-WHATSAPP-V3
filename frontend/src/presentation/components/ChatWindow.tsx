@@ -7,14 +7,16 @@ interface ChatWindowProps {
   contactId: number;
   contactName: string;
   contactAvatar?: string;
-  onBack?: () => void; // 🔥 NUEVO: Callback para volver atrás
+  onBack?: () => void;
+  onMessageSent?: (isNewConversation: boolean) => void; // 🔥 MODIFICADO: Indicar si es nueva conversación
 }
 
 export const ChatWindow: React.FC<ChatWindowProps> = ({
   contactId,
   contactName,
   contactAvatar,
-  onBack
+  onBack,
+  onMessageSent // 🔥 MODIFICADO: Recibir callback con parámetro
 }) => {
   const { user } = useAuthStore();
   const [messages, setMessages] = useState<EncryptedMessage[]>([]);
@@ -24,27 +26,26 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
+  
+  // 🔥 NUEVO: Track si es la primera vez que enviamos mensaje a este contacto
+  const [hasExistingMessages, setHasExistingMessages] = useState(false);
 
-  // Cargar historial al abrir chat
   useEffect(() => {
     loadChatHistory();
     
-    // Configurar listeners
     socketService.onNewEncryptedMessage(handleNewMessage);
     socketService.onChatMessagesRead(handleMessagesRead);
     socketService.onTypingStart(handleTypingStart);
     socketService.onTypingStop(handleTypingStop);
 
     return () => {
-      // Limpieza
       socketService.stopTyping(contactId);
       if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
+        window.clearTimeout(typingTimeoutRef.current);
       }
     };
   }, [contactId]);
 
-  // Auto-scroll al final
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -53,9 +54,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     try {
       setIsLoading(true);
       const history = await socketService.loadChatHistory(contactId);
-      setMessages(history.reverse());
       
-      // Marcar como leídos
+      // 🔥 CORRECCIÓN: NO invertir - backend ya envía en orden correcto
+      setMessages(history);
+      
+      // 🔥 NUEVO: Determinar si ya existían mensajes con este contacto
+      setHasExistingMessages(history.length > 0);
+      
       await socketService.markChatMessagesAsRead(contactId);
     } catch (error) {
       console.error('Error al cargar historial:', error);
@@ -65,9 +70,15 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   const handleNewMessage = (message: EncryptedMessage) => {
-    if (message.sender_id === contactId) {
+    if (
+      (message.sender_id === contactId && message.receiver_id === user?.id) ||
+      (message.sender_id === user?.id && message.receiver_id === contactId)
+    ) {
       setMessages(prev => [...prev, message]);
-      socketService.markChatMessagesAsRead(contactId);
+      
+      if (message.sender_id === contactId) {
+        socketService.markChatMessagesAsRead(contactId);
+      }
     }
   };
 
@@ -98,17 +109,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNewMessage(e.target.value);
 
-    // Enviar indicador de "escribiendo..."
     if (e.target.value.length > 0) {
       socketService.startTyping(contactId);
 
-      // Limpiar timeout anterior
       if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
+        window.clearTimeout(typingTimeoutRef.current);
       }
 
-      // Detener indicador después de 2 segundos de inactividad
-      typingTimeoutRef.current = setTimeout(() => {
+      typingTimeoutRef.current = window.setTimeout(() => {
         socketService.stopTyping(contactId);
       }, 2000);
     } else {
@@ -129,6 +137,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     try {
       const sentMessage = await socketService.sendEncryptedMessage(contactId, messageText);
       setMessages(prev => [...prev, sentMessage]);
+      
+      // 🔥 CORRECCIÓN: Solo actualizar conversaciones si es un contacto NUEVO
+      if (onMessageSent) {
+        const isNewConversation = !hasExistingMessages && messages.length === 0;
+        onMessageSent(isNewConversation);
+        
+        // Si es el primer mensaje, actualizar el estado
+        if (isNewConversation) {
+          setHasExistingMessages(true);
+        }
+      }
     } catch (error) {
       console.error('Error al enviar mensaje:', error);
       alert('Error al enviar mensaje');

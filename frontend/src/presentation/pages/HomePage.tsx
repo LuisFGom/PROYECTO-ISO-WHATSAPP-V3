@@ -1,41 +1,137 @@
 // frontend/src/presentation/pages/HomePage.tsx
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { UserMenu } from '../components/UserMenu';
 import { AddContactModal } from '../components/AddContactModal';
 import { ContactList } from '../components/ContactList';
-import { ChatWindow } from '../components/ChatWindow'; // 🔥 NUEVO IMPORT
+import { ChatList } from '../components/ChatList';
+import { ChatWindow } from '../components/ChatWindow';
 import { useSocketStatus } from '../hooks/useSocketStatus';
 import { useContacts, type Contact } from '../hooks/useContacts';
+import { useConversations, type Conversation } from '../hooks/useConversations';
+import { socketService } from '../../infrastructure/socket/socketService';
 
 export const HomePage = () => {
   const { isConnected } = useSocketStatus();
 
-  // 🔧 Aseguramos valores por defecto para evitar undefined
+  // 🔧 Hooks de contactos y conversaciones
   const {
     contacts = [],
-    isLoading = false,
+    isLoading: isLoadingContacts = false,
     refreshContacts,
     deleteContact,
     updateNickname,
     searchContacts,
   } = useContacts() || {};
 
+  // 🔥 MODIFICADO: Incluir el nuevo método silentRefreshConversations
+  const {
+    conversations = [],
+    isLoading: isLoadingConversations = false,
+    refreshConversations,
+    silentRefreshConversations, // 🔥 NUEVO: Actualización silenciosa
+    updateContactInConversations,
+    removeContactFromConversations
+  } = useConversations();
+
+  // 🔥 ACTUALIZADO: Ref para acceder a los métodos de conversaciones
+  const conversationsRef = useRef({
+    updateContactInConversations,
+    removeContactFromConversations,
+    silentRefreshConversations // 🔥 NUEVO
+  });
+
+  // Actualizar la ref cuando cambien los métodos
+  useEffect(() => {
+    conversationsRef.current = {
+      updateContactInConversations,
+      removeContactFromConversations,
+      silentRefreshConversations
+    };
+  }, [updateContactInConversations, removeContactFromConversations, silentRefreshConversations]);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   
-  // 🔥 NUEVO: Estado para controlar la vista
+  // 🔥 Estado para controlar la vista
   const [view, setView] = useState<'chats' | 'contacts'>('chats');
+
+  // 🔥 CORRECCIÓN 1: Optimizar escucha de mensajes - solo recargar si es relevante
+  useEffect(() => {
+    const handleNewMessage = (message: any) => {
+      // Solo recargar conversaciones si el mensaje es para el usuario actual
+      // o si está relacionado con conversaciones visibles
+      if (
+        message.receiver_id === selectedContact?.user.id || 
+        message.sender_id === selectedContact?.user.id
+      ) {
+        refreshConversations();
+      }
+    };
+
+    socketService.onNewEncryptedMessage(handleNewMessage);
+
+    return () => {
+      // No remover el listener global completamente
+      // Solo dejar de llamar refreshConversations
+    };
+  }, [refreshConversations, selectedContact]);
 
   // 🔧 Verificamos que searchContacts sea una función antes de usarla
   const filteredContacts = typeof searchContacts === 'function'
     ? searchContacts(searchQuery) ?? []
     : [];
 
+  // 🔥 CORRECCIÓN 2: Mejorar búsqueda de conversaciones
+  const filteredConversations = conversations.filter((conv: Conversation) => {
+    if (!searchQuery.trim()) return true;
+    
+    const searchTerm = searchQuery.toLowerCase();
+    const nickname = conv.contact.nickname?.toLowerCase() || '';
+    const username = conv.contact.username?.toLowerCase() || '';
+    const email = conv.contact.email?.toLowerCase() || '';
+    
+    return nickname.includes(searchTerm) || 
+           username.includes(searchTerm) || 
+           email.includes(searchTerm);
+  });
+
+  // 🔥 Handler para seleccionar conversación
+  const handleConversationClick = (conversation: Conversation) => {
+    // Convertir conversación a Contact para compatibilidad
+    const contact: Contact = {
+      id: conversation.contact.id,
+      userId: conversation.contact.user_id,
+      contactUserId: conversation.contact.user_id,
+      nickname: conversation.contact.has_contact 
+        ? conversation.contact.nickname 
+        : conversation.contact.email,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      user: {
+        id: conversation.contact.user_id,
+        username: conversation.contact.username,
+        email: conversation.contact.email,
+        avatarUrl: conversation.contact.avatar_url,
+        status: conversation.contact.is_online ? 'online' : 'offline',
+      }
+    };
+
+    setSelectedContact(contact);
+    if (window.innerWidth < 768) setIsSidebarOpen(false);
+    
+    // 🔥 CORRECCIÓN 3: Solo actualizar si hay mensajes no leídos
+    if (conversation.unread_count > 0) {
+      setTimeout(() => {
+        refreshConversations();
+      }, 1000);
+    }
+  };
+
   const handleContactSelect = (contact: Contact) => {
     setSelectedContact(contact);
-    setView('chats'); // Cambiar a vista de chats al seleccionar
+    setView('chats');
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
@@ -44,16 +140,67 @@ export const HomePage = () => {
     setIsSidebarOpen(true);
   };
 
-  const handleEditContact = async (contactId: number, nickname: string) => {
-    const result = await updateNickname(contactId, nickname);
-    if (!result.success) alert(result.error);
+  // 🔥 MODIFICADO: Handler para mensajes enviados - USAR ACTUALIZACIÓN SILENCIOSA
+  const handleMessageSent = (isNewConversation: boolean) => {
+    if (isNewConversation) {
+      // Para conversaciones nuevas, recarga completa
+      refreshConversations();
+    } else {
+      // 🔥 PARA CONVERSACIONES EXISTENTES: Actualización silenciosa
+      silentRefreshConversations();
+    }
   };
 
+  // 🔥 NUEVO: Handler para actualizar contactos en conversaciones
+  const handleContactUpdated = (contactUserId: number, nickname: string) => {
+    // Actualizar localmente sin recargar
+    if (conversationsRef.current.updateContactInConversations) {
+      conversationsRef.current.updateContactInConversations(contactUserId, {
+        nickname,
+        has_contact: true
+      });
+    }
+  };
+
+  // 🔥 NUEVO: Handler para eliminar contacto de conversaciones
+  const handleContactDeleted = (contactUserId: number) => {
+    // Actualizar localmente sin recargar
+    if (conversationsRef.current.removeContactFromConversations) {
+      conversationsRef.current.removeContactFromConversations(contactUserId);
+    }
+  };
+
+  // 🔥 MODIFICADO: Handler de edición de contacto
+  const handleEditContact = async (contactId: number, nickname: string) => {
+    const result = await updateNickname(contactId, nickname);
+    if (result.success) {
+      // 🔥 ACTUALIZAR LOCALMENTE en conversaciones también
+      const contact = contacts.find(c => c.id === contactId);
+      if (contact) {
+        handleContactUpdated(contact.user.id, nickname);
+      }
+    } else {
+      alert(result.error);
+    }
+  };
+
+  // 🔥 MODIFICADO: Handler de eliminación de contacto
   const handleDeleteContact = async (contactId: number) => {
     const result = await deleteContact(contactId);
-    if (!result.success) alert(result.error);
-    if (selectedContact?.id === contactId) setSelectedContact(null);
+    if (result.success) {
+      // 🔥 ACTUALIZAR LOCALMENTE en conversaciones también
+      const contact = contacts.find(c => c.id === contactId);
+      if (contact) {
+        handleContactDeleted(contact.user.id);
+      }
+      if (selectedContact?.id === contactId) setSelectedContact(null);
+    } else {
+      alert(result.error);
+    }
   };
+
+  // 🔥 Determinar qué mostrar según la vista
+  const isLoading = view === 'chats' ? isLoadingConversations : isLoadingContacts;
 
   return (
     <>
@@ -87,7 +234,7 @@ export const HomePage = () => {
             </div>
           </div>
 
-          {/* 🔥 NUEVO: Tabs de navegación */}
+          {/* 🔥 Tabs de navegación */}
           <div className="flex border-b border-gray-200">
             <button
               onClick={() => setView('chats')}
@@ -97,7 +244,7 @@ export const HomePage = () => {
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              💬 Chats
+              💬 Chats {conversations.length > 0 && `(${conversations.length})`}
             </button>
             <button
               onClick={() => setView('contacts')}
@@ -107,7 +254,7 @@ export const HomePage = () => {
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
-              👥 Contactos
+              👥 Contactos {contacts.length > 0 && `(${contacts.length})`}
             </button>
           </div>
 
@@ -122,7 +269,7 @@ export const HomePage = () => {
             />
           </div>
 
-          {/* Lista de contactos / Loading */}
+          {/* Lista de chats/contactos */}
           <div className="overflow-y-auto h-[calc(100vh-168px)] p-2">
             {isLoading ? (
               <div className="flex items-center justify-center py-8">
@@ -146,24 +293,18 @@ export const HomePage = () => {
                     d="M4 12a8 8 0 018-8v8z"
                   />
                 </svg>
-                <span className="text-gray-600">Cargando contactos...</span>
+                <span className="text-gray-600">
+                  {view === 'chats' ? 'Cargando chats...' : 'Cargando contactos...'}
+                </span>
               </div>
             ) : view === 'chats' ? (
-              // 🔥 NUEVO: Vista de chats (usa la misma lista de contactos)
-              <ContactList
-                contacts={
-                  Array.isArray(filteredContacts) && filteredContacts.length > 0
-                    ? filteredContacts
-                    : Array.isArray(contacts)
-                    ? contacts
-                    : []
-                }
-                onContactClick={handleContactSelect}
-                onDeleteContact={handleDeleteContact}
-                onEditContact={handleEditContact}
+              // 🔥 Vista de CHATS (usa ChatList)
+              <ChatList
+                conversations={filteredConversations}
+                onConversationClick={handleConversationClick}
               />
             ) : (
-              // Vista de contactos (tu lógica original)
+              // 🔥 Vista de CONTACTOS (usa ContactList)
               <ContactList
                 contacts={
                   Array.isArray(filteredContacts) && filteredContacts.length > 0
@@ -197,7 +338,7 @@ export const HomePage = () => {
           )}
         </div>
 
-        {/* 🔥 Área de chat - ACTUALIZADO */}
+        {/* 🔥 Área de chat */}
         <div
           className={`
             ${!isSidebarOpen || selectedContact ? 'flex' : 'hidden md:flex'}
@@ -205,15 +346,15 @@ export const HomePage = () => {
           `}
         >
           {selectedContact ? (
-            // 🔥 NUEVO: Mostrar ChatWindow cuando hay contacto seleccionado
             <ChatWindow
               contactId={selectedContact.user.id}
               contactName={selectedContact.nickname ?? selectedContact.user.username}
               contactAvatar={selectedContact.user.avatarUrl ?? undefined}
               onBack={handleBackToChats}
+              onMessageSent={handleMessageSent} // 🔥 CORRECCIÓN: Usar handler optimizado
             />
           ) : (
-            // Pantalla de bienvenida (tu diseño original)
+            // Pantalla de bienvenida
             <>
               <div className="h-16 bg-gray-200 border-b border-gray-300 flex items-center px-4">
                 <div className="flex items-center gap-3">
@@ -237,7 +378,10 @@ export const HomePage = () => {
                       WhatsApp Web
                     </h3>
                     <p className="text-gray-500">
-                      Selecciona un chat para comenzar
+                      {view === 'chats' 
+                        ? 'Selecciona una conversación para comenzar'
+                        : 'Selecciona un contacto para iniciar un chat'
+                      }
                     </p>
                   </div>
                 </div>
@@ -282,7 +426,10 @@ export const HomePage = () => {
       <AddContactModal
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
-        onContactAdded={refreshContacts}
+        onContactAdded={() => {
+          refreshContacts();
+          refreshConversations();
+        }}
       />
     </>
   );
