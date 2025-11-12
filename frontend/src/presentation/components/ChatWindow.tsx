@@ -7,16 +7,20 @@ interface ChatWindowProps {
   contactId: number;
   contactName: string;
   contactAvatar?: string;
+  contactStatus?: 'online' | 'offline'; // 🔥 NUEVO: Estado del contacto
+  contactLastSeen?: Date | null; // 🔥 NUEVO: Última vez visto
   onBack?: () => void;
-  onMessageSent?: (isNewConversation: boolean) => void; // 🔥 MODIFICADO: Indicar si es nueva conversación
+  onMessageSent?: (isNewConversation: boolean) => void;
 }
 
 export const ChatWindow: React.FC<ChatWindowProps> = ({
   contactId,
   contactName,
   contactAvatar,
+  contactStatus = 'offline', // 🔥 NUEVO: Default offline
+  contactLastSeen, // 🔥 NUEVO
   onBack,
-  onMessageSent // 🔥 MODIFICADO: Recibir callback con parámetro
+  onMessageSent
 }) => {
   const { user } = useAuthStore();
   const [messages, setMessages] = useState<EncryptedMessage[]>([]);
@@ -26,36 +30,89 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<number | null>(null);
-  
-  // 🔥 NUEVO: Track si es la primera vez que enviamos mensaje a este contacto
   const [hasExistingMessages, setHasExistingMessages] = useState(false);
+  const processedMessageIds = useRef<Set<number>>(new Set());
 
-  // 1. Efecto para cargar historial y configurar listeners de Socket
   useEffect(() => {
     loadChatHistory();
     
+    const handleNewMessage = (message: EncryptedMessage) => {
+      if (processedMessageIds.current.has(message.id)) {
+        console.log(`⚠️ Mensaje ${message.id} ya procesado, ignorando duplicado`);
+        return;
+      }
+
+      if (
+        (message.sender_id === contactId && message.receiver_id === user?.id) ||
+        (message.sender_id === user?.id && message.receiver_id === contactId)
+      ) {
+        console.log(`✅ Nuevo mensaje recibido: ${message.id}`);
+        processedMessageIds.current.add(message.id);
+        setMessages(prev => [...prev, message]);
+        
+        if (message.sender_id === contactId) {
+          void socketService.markChatMessagesAsRead(contactId);
+        }
+      }
+    };
+
+    const handleMessagesRead = (data: { readBy: number }) => {
+      if (data.readBy === contactId) {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.sender_id === user?.id && msg.receiver_id === contactId
+              ? { ...msg, is_read: true }
+              : msg
+          )
+        );
+      }
+    };
+
+    const handleTypingStart = (data: { from: number }) => {
+      if (data.from === contactId) {
+        setIsTyping(true);
+      }
+    };
+
+    const handleTypingStop = (data: { from: number }) => {
+      if (data.from === contactId) {
+        setIsTyping(false);
+      }
+    };
+
     socketService.onNewEncryptedMessage(handleNewMessage);
     socketService.onChatMessagesRead(handleMessagesRead);
     socketService.onTypingStart(handleTypingStart);
     socketService.onTypingStop(handleTypingStop);
 
     return () => {
-      // Limpieza al desmontar el componente o cambiar contactId
+      const socket = socketService.getSocket();
+      if (socket) {
+        socket.off('chat:new-message', handleNewMessage);
+        socket.off('chat:messages-read', handleMessagesRead);
+        socket.off('typing:start', handleTypingStart);
+        socket.off('typing:stop', handleTypingStop);
+      }
+      
       socketService.stopTyping(contactId);
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
       }
+      
+      processedMessageIds.current.clear();
     };
-  }, [contactId]);
+  }, [contactId, user?.id]);
 
-  // 2. Efecto para SCROLL AUTOMÁTICO (al cargar o al recibir/enviar un mensaje)
+  // 🔥 CORRECCIÓN: Scroll solo para nuevos mensajes (smooth)
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]); // Se incluye isLoading para asegurar el scroll después de la carga inicial
+    if (!isLoading && messages.length > 0) {
+      scrollToBottom('smooth');
+    }
+  }, [messages]);
 
-  const scrollToBottom = () => {
-    // Scroll con comportamiento 'smooth' para una mejor experiencia
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // 🔥 NUEVO: Función de scroll mejorada
+  const scrollToBottom = (behavior: 'auto' | 'smooth' = 'auto') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
   const loadChatHistory = async () => {
@@ -63,59 +120,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setIsLoading(true);
       const history = await socketService.loadChatHistory(contactId);
       
-      // 🔥 CORRECCIÓN: NO invertir - backend ya envía en orden correcto
       setMessages(history);
-      
-      // 🔥 NUEVO: Determinar si ya existían mensajes con este contacto
       setHasExistingMessages(history.length > 0);
       
-      // Marcar mensajes como leídos después de cargar el historial
+      processedMessageIds.current.clear();
+      history.forEach(msg => processedMessageIds.current.add(msg.id));
+      
       await socketService.markChatMessagesAsRead(contactId);
     } catch (error) {
       console.error('Error al cargar historial:', error);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleNewMessage = (message: EncryptedMessage) => {
-    // Asegurar que el mensaje pertenece a este chat (enviado o recibido)
-    if (
-      (message.sender_id === contactId && message.receiver_id === user?.id) ||
-      (message.sender_id === user?.id && message.receiver_id === contactId)
-    ) {
-      setMessages(prev => [...prev, message]);
-      
-      // Marcar como leído si el mensaje fue enviado por el contacto actual
-      if (message.sender_id === contactId) {
-        // Se ejecuta sin esperar el resultado para no bloquear
-        void socketService.markChatMessagesAsRead(contactId);
-      }
-    }
-  };
-
-  const handleMessagesRead = (data: { readBy: number }) => {
-    if (data.readBy === contactId) {
-      // Marcar como leídos solo los mensajes que yo envié a este contacto
-      setMessages(prev =>
-        prev.map(msg =>
-          msg.sender_id === user?.id && msg.receiver_id === contactId
-            ? { ...msg, is_read: true }
-            : msg
-        )
-      );
-    }
-  };
-
-  const handleTypingStart = (data: { from: number }) => {
-    if (data.from === contactId) {
-      setIsTyping(true);
-    }
-  };
-
-  const handleTypingStop = (data: { from: number }) => {
-    if (data.from === contactId) {
-      setIsTyping(false);
+      // 🔥 CORRECCIÓN: Scroll inmediato al cargar historial
+      setTimeout(() => scrollToBottom('auto'), 100);
     }
   };
 
@@ -125,7 +142,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (e.target.value.length > 0) {
       socketService.startTyping(contactId);
 
-      // Reiniciar el temporizador para detener el "escribiendo..."
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
       }
@@ -134,7 +150,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         socketService.stopTyping(contactId);
       }, 2000);
     } else {
-      // Detener inmediatamente si el campo está vacío
       socketService.stopTyping(contactId);
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
@@ -151,19 +166,18 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const messageText = newMessage.trim();
     setNewMessage('');
     setIsSending(true);
-    socketService.stopTyping(contactId); // Detener typing al enviar
+    socketService.stopTyping(contactId);
 
     try {
       const sentMessage = await socketService.sendEncryptedMessage(contactId, messageText);
+      
+      processedMessageIds.current.add(sentMessage.id);
       setMessages(prev => [...prev, sentMessage]);
       
-      // 🔥 CORRECCIÓN Lógica: Determinar si se debe notificar la creación de una NUEVA conversación
       if (onMessageSent) {
-        // Es nueva conversación si NO había mensajes existentes Y la lista *actual* (antes de este mensaje) estaba vacía.
         const isNewConversation = !hasExistingMessages && messages.length === 0;
         onMessageSent(isNewConversation);
         
-        // Si es el primer mensaje, actualizar el estado local para futuros envíos.
         if (isNewConversation) {
           setHasExistingMessages(true);
         }
@@ -184,11 +198,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     });
   };
 
+  // 🔥 NUEVO: Función para formatear última vez visto
+  const formatLastSeen = (lastSeen: Date | null | undefined) => {
+    if (!lastSeen) return 'Última vez hace mucho';
+    
+    const date = new Date(lastSeen);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return 'Última vez hace un momento';
+    if (minutes < 60) return `Última vez hace ${minutes} min`;
+    if (hours < 24) return `Última vez hace ${hours}h`;
+    if (days === 1) return 'Última vez ayer';
+    return `Última vez ${date.toLocaleDateString('es-ES')}`;
+  };
+
   if (!user) return null;
 
   return (
     <div className="flex flex-col h-full bg-gray-100">
-      {/* Header */}
       <div className="h-16 bg-gray-200 border-b border-gray-300 flex items-center px-4">
         {onBack && (
           <button
@@ -220,14 +251,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             <h2 className="font-semibold text-gray-800">{contactName}</h2>
             {isTyping ? (
               <p className="text-xs text-whatsapp-green italic">escribiendo...</p>
+            ) : contactStatus === 'online' ? (
+              <p className="text-xs text-whatsapp-green font-medium">Online</p>
+            ) : contactLastSeen ? (
+              <p className="text-xs text-gray-500">{formatLastSeen(contactLastSeen)}</p>
             ) : (
-              <p className="text-xs text-gray-500">Online</p>
+              <p className="text-xs text-gray-500">Offline</p>
             )}
           </div>
         </div>
       </div>
 
-      {/* Mensajes */}
       <div className="flex-1 bg-[#e5ddd5] p-4 overflow-y-auto">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
@@ -264,12 +298,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
         ) : (
           <div className="space-y-2">
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const isOwnMessage = message.sender_id === user.id;
 
               return (
                 <div
-                  key={message.id}
+                  key={`${message.id}-${index}`}
                   className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
@@ -286,7 +320,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       </span>
                       {isOwnMessage && (
                         <span 
-                          className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`} // 🔥 CAMBIO AQUÍ: color más fuerte
+                          className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`}
                         >
                           {message.is_read ? '✓✓' : '✓'}
                         </span>
@@ -296,12 +330,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 </div>
               );
             })}
-            <div ref={messagesEndRef} /> {/* Referencia para el scroll */}
+            <div ref={messagesEndRef} />
           </div>
         )}
       </div>
 
-      {/* Input */}
       <div className="h-16 bg-gray-200 border-t border-gray-300 flex items-center px-4 gap-3">
         <form onSubmit={handleSendMessage} className="flex items-center gap-3 w-full">
           <input

@@ -11,6 +11,7 @@ export interface ConversationContact {
   nickname: string;
   is_online: boolean;
   has_contact: boolean;
+  last_seen: string | null; // 🔥 AGREGADO: Campo que faltaba
 }
 
 export interface Conversation {
@@ -20,7 +21,7 @@ export interface Conversation {
     id: number | null;
     preview: string | null;
     timestamp: Date | null;
-    is_own_message?: boolean; // 🔥 NUEVO: Para saber si el último mensaje es propio
+    is_own_message?: boolean;
   };
   unread_count: number;
 }
@@ -40,12 +41,10 @@ export const useConversations = () => {
       if (response.data.success) {
         const conversationsData = response.data.conversations || [];
         
-        // 🔥 NUEVO: Procesar conversaciones para agregar información del último mensaje
         const processedConversations = conversationsData.map((conv: Conversation) => ({
           ...conv,
           last_message: {
             ...conv.last_message,
-            // 🔥 Determinar si el último mensaje es propio basado en el preview
             is_own_message: conv.last_message.preview?.startsWith('Tú: ') || false
           }
         }));
@@ -67,7 +66,6 @@ export const useConversations = () => {
     fetchConversations();
   }, []);
 
-  // 🔥 NUEVO: Actualización silenciosa sin mostrar "Cargando..."
   const silentRefreshConversations = async () => {
     try {
       const response = await apiClient.get('/conversations');
@@ -75,7 +73,6 @@ export const useConversations = () => {
       if (response.data.success) {
         const conversationsData = response.data.conversations || [];
         
-        // 🔥 Procesar conversaciones para agregar información del último mensaje
         const processedConversations = conversationsData.map((conv: Conversation) => ({
           ...conv,
           last_message: {
@@ -88,11 +85,9 @@ export const useConversations = () => {
       }
     } catch (err: any) {
       console.error('Error al actualizar conversaciones:', err);
-      // No mostramos error al usuario en actualización silenciosa
     }
   };
 
-  // 🔥 NUEVO: Actualizar solo una conversación específica
   const updateConversationLastMessage = (contactId: number, lastMessage: Conversation['last_message']) => {
     setConversations(prev => 
       prev.map(conv => 
@@ -101,7 +96,6 @@ export const useConversations = () => {
               ...conv, 
               last_message: {
                 ...lastMessage,
-                // 🔥 Determinar si el mensaje es propio
                 is_own_message: lastMessage.preview?.startsWith('Tú: ') || false
               }
             } 
@@ -110,7 +104,6 @@ export const useConversations = () => {
     );
   };
 
-  // Actualización local sin recarga completa
   const updateContactInConversations = (contactUserId: number, updates: Partial<ConversationContact>) => {
     setConversations(prev => 
       prev.map(conv => 
@@ -124,7 +117,6 @@ export const useConversations = () => {
     );
   };
 
-  // Eliminar contacto de conversaciones localmente
   const removeContactFromConversations = (contactUserId: number) => {
     setConversations(prev => 
       prev.map(conv => 
@@ -151,8 +143,8 @@ export const useConversations = () => {
     isLoading,
     error,
     refreshConversations,
-    silentRefreshConversations, // 🔥 NUEVO: Actualización silenciosa
-    updateConversationLastMessage, // 🔥 NUEVO: Actualizar mensaje específico
+    silentRefreshConversations,
+    updateConversationLastMessage,
     updateContactInConversations,
     removeContactFromConversations
   };
