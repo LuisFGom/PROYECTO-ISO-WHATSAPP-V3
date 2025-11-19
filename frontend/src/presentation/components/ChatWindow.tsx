@@ -40,6 +40,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [menuPosition, setMenuPosition] = useState<'top' | 'bottom'>('bottom');
   const menuRef = useRef<HTMLDivElement>(null);
 
+  // 🔥 NUEVO: Estados para búsqueda
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [currentSearchIndex, setCurrentSearchIndex] = useState(0);
+  const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -56,7 +63,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     
     const handleNewMessage = (message: EncryptedMessage) => {
       if (processedMessageIds.current.has(message.id)) {
-        console.log(`⚠️ Mensaje ${message.id} ya procesado, ignorando duplicado`);
         return;
       }
 
@@ -64,7 +70,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         (message.sender_id === contactId && message.receiver_id === user?.id) ||
         (message.sender_id === user?.id && message.receiver_id === contactId)
       ) {
-        console.log(`✅ Nuevo mensaje recibido: ${message.id}`);
         processedMessageIds.current.add(message.id);
         setMessages(prev => [...prev, message]);
         
@@ -75,15 +80,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
 
     const handleMessageEdited = (editedMessage: EncryptedMessage) => {
-      console.log(`✏️ Mensaje editado: ${editedMessage.id}`);
       setMessages(prev => 
         prev.map(msg => msg.id === editedMessage.id ? editedMessage : msg)
       );
     };
 
     const handleMessageDeleted = (data: { messageId: number; deleteForAll: boolean }) => {
-      console.log(`🗑️ Mensaje eliminado: ${data.messageId}, para todos: ${data.deleteForAll}`);
-      
       if (data.deleteForAll) {
         setMessages(prev =>
           prev.map(msg =>
@@ -150,13 +152,71 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [contactId, user?.id]);
 
   useEffect(() => {
-    if (!isLoading && messages.length > 0) {
+    if (!isLoading && messages.length > 0 && !isSearchOpen) {
       scrollToBottom('smooth');
     }
-  }, [messages]);
+  }, [messages, isSearchOpen]);
+
+  // 🔥 NUEVO: Buscar mensajes cuando cambia el query
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setCurrentSearchIndex(0);
+      return;
+    }
+
+    const query = searchQuery.toLowerCase();
+    const results: number[] = [];
+
+    messages.forEach((message) => {
+      if (!message.is_deleted_for_all && message.content.toLowerCase().includes(query)) {
+        results.push(message.id);
+      }
+    });
+
+    setSearchResults(results);
+    setCurrentSearchIndex(results.length > 0 ? 0 : -1);
+
+    // Scroll al primer resultado
+    if (results.length > 0) {
+      scrollToMessage(results[0]);
+    }
+  }, [searchQuery, messages]);
 
   const scrollToBottom = (behavior: 'auto' | 'smooth' = 'auto') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
+  };
+
+  // 🔥 NUEVO: Scroll a un mensaje específico
+  const scrollToMessage = (messageId: number) => {
+    const element = messageRefs.current.get(messageId);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  // 🔥 NUEVO: Navegar al resultado anterior
+  const handlePreviousResult = () => {
+    if (searchResults.length === 0) return;
+    const newIndex = currentSearchIndex > 0 ? currentSearchIndex - 1 : searchResults.length - 1;
+    setCurrentSearchIndex(newIndex);
+    scrollToMessage(searchResults[newIndex]);
+  };
+
+  // 🔥 NUEVO: Navegar al siguiente resultado
+  const handleNextResult = () => {
+    if (searchResults.length === 0) return;
+    const newIndex = currentSearchIndex < searchResults.length - 1 ? currentSearchIndex + 1 : 0;
+    setCurrentSearchIndex(newIndex);
+    scrollToMessage(searchResults[newIndex]);
+  };
+
+  // 🔥 NUEVO: Cerrar búsqueda
+  const handleCloseSearch = () => {
+    setIsSearchOpen(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    setCurrentSearchIndex(0);
   };
 
   const loadChatHistory = async () => {
@@ -233,12 +293,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
-  // 🔥 CORREGIDO: Solo el ÚLTIMO mensaje abre hacia arriba
   const handleOpenMenu = (messageId: number, messageIndex: number) => {
-    // Verificar si es el último mensaje de la lista
     const isLastMessage = messageIndex === messages.length - 1;
-    
-    // Solo el ÚLTIMO abre hacia arriba, todos los demás hacia abajo
     setMenuPosition(isLastMessage ? 'top' : 'bottom');
     setOpenMenuId(openMenuId === messageId ? null : messageId);
   };
@@ -301,6 +357,24 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
+  // 🔥 NUEVO: Resaltar texto encontrado
+  const highlightText = (text: string, query: string) => {
+    if (!query.trim()) return text;
+
+    const parts = text.split(new RegExp(`(${query})`, 'gi'));
+    return (
+      <>
+        {parts.map((part, i) => 
+          part.toLowerCase() === query.toLowerCase() ? (
+            <mark key={i} className="bg-yellow-300 font-semibold">{part}</mark>
+          ) : (
+            part
+          )
+        )}
+      </>
+    );
+  };
+
   const formatMessageTime = (timestamp: Date) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString('es-ES', {
@@ -330,71 +404,115 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-gray-100">
+      {/* 🔥 HEADER: Con búsqueda */}
       <div className="h-16 bg-gray-200 border-b border-gray-300 flex items-center px-4">
         {onBack && (
           <button
             onClick={onBack}
             className="md:hidden mr-3 p-2 hover:bg-gray-300 rounded-full transition"
           >
-            <svg
-              className="w-6 h-6 text-gray-700"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 19l-7-7 7-7"
-              />
+            <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
         )}
-        <div className="flex items-center gap-3">
-          <img 
-            src={contactAvatar || '/default-avatar.png'} 
-            alt={contactName}
-            className="w-10 h-10 rounded-full bg-gray-400"
-          />
-          <div>
-            <h2 className="font-semibold text-gray-800">{contactName}</h2>
-            {isTyping ? (
-              <p className="text-xs text-whatsapp-green italic">escribiendo...</p>
-            ) : contactStatus === 'online' ? (
-              <p className="text-xs text-whatsapp-green font-medium">Online</p>
-            ) : contactLastSeen ? (
-              <p className="text-xs text-gray-500">{formatLastSeen(contactLastSeen)}</p>
-            ) : (
-              <p className="text-xs text-gray-500">Offline</p>
-            )}
-          </div>
-        </div>
+
+        {!isSearchOpen ? (
+          <>
+            <div className="flex items-center gap-3 flex-1">
+              <img 
+                src={contactAvatar || '/default-avatar.png'} 
+                alt={contactName}
+                className="w-10 h-10 rounded-full bg-gray-400"
+              />
+              <div>
+                <h2 className="font-semibold text-gray-800">{contactName}</h2>
+                {isTyping ? (
+                  <p className="text-xs text-whatsapp-green italic">escribiendo...</p>
+                ) : contactStatus === 'online' ? (
+                  <p className="text-xs text-whatsapp-green font-medium">Online</p>
+                ) : contactLastSeen ? (
+                  <p className="text-xs text-gray-500">{formatLastSeen(contactLastSeen)}</p>
+                ) : (
+                  <p className="text-xs text-gray-500">Offline</p>
+                )}
+              </div>
+            </div>
+
+            {/* 🔥 BOTÓN LUPA */}
+            <button
+              onClick={() => setIsSearchOpen(true)}
+              className="p-2 hover:bg-gray-300 rounded-full transition"
+              title="Buscar mensajes"
+            >
+              <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
+          </>
+        ) : (
+          <>
+            {/* 🔥 BARRA DE BÚSQUEDA */}
+            <div className="flex items-center gap-2 flex-1">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar mensajes..."
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp-green"
+                autoFocus
+              />
+
+              {/* 🔥 CONTADOR Y NAVEGACIÓN */}
+              {searchResults.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 whitespace-nowrap">
+                    {currentSearchIndex + 1} de {searchResults.length}
+                  </span>
+                  <button
+                    onClick={handlePreviousResult}
+                    className="p-1 hover:bg-gray-300 rounded transition"
+                    title="Anterior"
+                  >
+                    <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={handleNextResult}
+                    className="p-1 hover:bg-gray-300 rounded transition"
+                    title="Siguiente"
+                  >
+                    <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+
+              {/* 🔥 BOTÓN CERRAR */}
+              <button
+                onClick={handleCloseSearch}
+                className="p-2 hover:bg-gray-300 rounded-full transition"
+                title="Cerrar búsqueda"
+              >
+                <svg className="w-5 h-5 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
+      {/* 🔥 MENSAJES */}
       <div className="flex-1 bg-[#e5ddd5] p-4 overflow-y-auto">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center text-gray-500">
-              <svg
-                className="animate-spin h-8 w-8 mx-auto mb-2 text-gray-600"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v8z"
-                />
+              <svg className="animate-spin h-8 w-8 mx-auto mb-2 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
               </svg>
               <p>Cargando mensajes...</p>
             </div>
@@ -411,18 +529,23 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             {messages.map((message, index) => {
               const isOwnMessage = message.sender_id === user.id;
               const isEditing = editingMessageId === message.id;
+              const isHighlighted = searchResults.includes(message.id);
+              const isCurrentResult = searchResults[currentSearchIndex] === message.id;
 
               return (
                 <div
                   key={`${message.id}-${index}`}
+                  ref={(el) => {
+                    if (el) messageRefs.current.set(message.id, el);
+                  }}
                   className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} group relative`}
                 >
                   <div
-                    className={`max-w-xs px-4 py-2 rounded-lg shadow ${
-                      isOwnMessage
-                        ? 'bg-[#dcf8c6]'
-                        : 'bg-white'
-                    } ${message.is_deleted_for_all ? 'italic text-gray-500' : ''}`}
+                    className={`max-w-xs px-4 py-2 rounded-lg shadow transition-all ${
+                      isOwnMessage ? 'bg-[#dcf8c6]' : 'bg-white'
+                    } ${message.is_deleted_for_all ? 'italic text-gray-500' : ''} ${
+                      isCurrentResult ? 'ring-2 ring-yellow-400' : isHighlighted ? 'ring-1 ring-yellow-300' : ''
+                    }`}
                   >
                     {isEditing ? (
                       <div className="flex flex-col gap-2">
@@ -454,16 +577,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       </div>
                     ) : (
                       <>
-                        <p className="text-sm text-gray-800 break-words">{message.content}</p>
+                        <p className="text-sm text-gray-800 break-words">
+                          {isSearchOpen && searchQuery ? highlightText(message.content, searchQuery) : message.content}
+                        </p>
                         <div className="flex items-center justify-end gap-1 mt-1">
                           <span className="text-xs text-gray-500">
                             {formatMessageTime(message.timestamp)}
                             {message.edited_at && ' (editado)'}
                           </span>
                           {isOwnMessage && (
-                            <span 
-                              className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`}
-                            >
+                            <span className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`}>
                               {message.is_read ? '✓✓' : '✓'}
                             </span>
                           )}
@@ -472,8 +595,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     )}
                   </div>
 
-                  {/* 🔥 CORREGIDO: Pasar índice para detectar el último */}
-                  {!message.is_deleted_for_all && !isEditing && (
+                  {!message.is_deleted_for_all && !isEditing && !isSearchOpen && (
                     <div className="relative ml-2 flex items-start">
                       <button
                         onClick={() => handleOpenMenu(message.id, index)}
@@ -490,9 +612,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                           className={`absolute ${isOwnMessage ? 'right-0' : 'left-0'} bg-white rounded-lg shadow-xl border border-gray-200 z-50 min-w-[180px] ${
                             menuPosition === 'top' ? 'bottom-8' : 'top-8'
                           }`}
-                          style={{
-                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                          }}
+                          style={{ boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)' }}
                         >
                           {isOwnMessage && (
                             <>
@@ -530,6 +650,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         )}
       </div>
 
+      {/* 🔥 INPUT DE MENSAJE */}
       <div className="h-16 bg-gray-200 border-t border-gray-300 flex items-center px-4 gap-3">
         <form onSubmit={handleSendMessage} className="flex items-center gap-3 w-full">
           <input
@@ -545,19 +666,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             className="bg-whatsapp-green text-white p-3 rounded-full hover:bg-whatsapp-green-dark transition disabled:opacity-50"
             disabled={!newMessage.trim() || isSending}
           >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={2}
-              stroke="currentColor"
-              className="w-5 h-5"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
-              />
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
             </svg>
           </button>
         </form>
