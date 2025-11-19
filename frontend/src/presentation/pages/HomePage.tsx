@@ -128,11 +128,14 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations]);
 
-  // 🔥 NUEVO: Listener para mensajes EDITADOS
+  // 🔥 CORREGIDO: Listener para mensajes EDITADOS - CON TIMEOUT PARA ASEGURAR ACTUALIZACIÓN
   useEffect(() => {
     const handleMessageEditedForList = () => {
-      console.log('✏️ Mensaje editado detectado en HomePage, actualizando lista...');
-      silentRefreshConversations();
+      console.log('✏️ Mensaje editado detectado en HomePage, actualizando lista en segundo plano...');
+      // Pequeña espera para asegurar que el backend ya actualizó
+      setTimeout(() => {
+        silentRefreshConversations();
+      }, 500);
     };
 
     socketService.onMessageEdited(handleMessageEditedForList);
@@ -145,11 +148,14 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations]);
 
-  // 🔥 NUEVO: Listener para mensajes ELIMINADOS
+  // 🔥 CORREGIDO: Listener para mensajes ELIMINADOS - CON TIMEOUT PARA ASEGURAR ACTUALIZACIÓN
   useEffect(() => {
     const handleMessageDeletedForList = () => {
-      console.log('🗑️ Mensaje eliminado detectado en HomePage, actualizando lista...');
-      silentRefreshConversations();
+      console.log('🗑️ Mensaje eliminado detectado en HomePage, actualizando lista en segundo plano...');
+      // Pequeña espera para asegurar que el backend ya actualizó
+      setTimeout(() => {
+        silentRefreshConversations();
+      }, 500);
     };
 
     socketService.onChatMessageDeleted(handleMessageDeletedForList);

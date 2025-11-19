@@ -21,30 +21,26 @@ export interface ConversationWithContact {
   contact_nickname: string;
   last_message_id: number | null;
   last_message_content: string | null;
-  last_message_iv: string | null;  // ← ESTA LÍNEA DEBE EXISTIR
+  last_message_iv: string | null;
+  last_message_sender_id: number | null;
   last_message_at: Date | null;
   unread_count: number;
   is_online: boolean;
-  has_contact: boolean;  // ← ESTA LÍNEA DEBE EXISTIR
+  has_contact: boolean;
 }
 
 export class ConversationRepository {
   constructor(private db: Pool) {}
 
-  /**
-   * Crear o actualizar una conversación
-   */
   async createOrUpdate(
     user1Id: number,
     user2Id: number,
     lastMessageId: number
   ): Promise<void> {
-    // Ordenar IDs para mantener consistencia (siempre user1_id < user2_id)
     const [smallerId, largerId] = user1Id < user2Id 
       ? [user1Id, user2Id] 
       : [user2Id, user1Id];
 
-    // Verificar si ya existe la conversación
     const [existing] = await this.db.execute<RowDataPacket[]>(
       `SELECT id FROM conversations 
        WHERE (user1_id = ? AND user2_id = ?) 
@@ -53,7 +49,6 @@ export class ConversationRepository {
     );
 
     if (existing.length > 0) {
-      // Actualizar conversación existente
       await this.db.execute(
         `UPDATE conversations 
          SET last_message_id = ?,
@@ -62,7 +57,6 @@ export class ConversationRepository {
         [lastMessageId, existing[0].id]
       );
     } else {
-      // Crear nueva conversación
       await this.db.execute(
         `INSERT INTO conversations (user1_id, user2_id, last_message_id, last_message_at)
          VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
@@ -71,11 +65,7 @@ export class ConversationRepository {
     }
   }
 
-  /**
-   * Incrementar contador de mensajes no leídos
-   */
   async incrementUnreadCount(receiverId: number, senderId: number): Promise<void> {
-    // Determinar qué columna actualizar según el orden de IDs
     const [smallerId, largerId] = receiverId < senderId 
       ? [receiverId, senderId] 
       : [senderId, receiverId];
@@ -93,9 +83,6 @@ export class ConversationRepository {
     );
   }
 
-  /**
-   * Resetear contador de mensajes no leídos
-   */
   async resetUnreadCount(userId: number, contactId: number): Promise<void> {
     const [smallerId, largerId] = userId < contactId 
       ? [userId, contactId] 
@@ -115,7 +102,9 @@ export class ConversationRepository {
   }
 
   /**
-   * Obtener todas las conversaciones de un usuario con información del contacto
+   * 🔥 CORREGIDO: Obtener conversaciones con el ÚLTIMO MENSAJE VÁLIDO
+   * - "Eliminar para TODOS" → Muestra "Este mensaje fue eliminado"
+   * - "Eliminar para MÍ" → Muestra el anterior mensaje no eliminado
    */
   async getUserConversations(userId: number): Promise<ConversationWithContact[]> {
     const [rows] = await this.db.execute<RowDataPacket[]>(
@@ -127,22 +116,78 @@ export class ConversationRepository {
         u.email as contact_email,
         u.avatar_url as contact_avatar_url,
         COALESCE(cnt.nickname, u.email) as contact_nickname,
-        c.last_message_id,
-        m.encrypted_content as last_message_content,
-        m.iv as last_message_iv,
-        c.last_message_at,
+        
+        -- 🔥 ÚLTIMO MENSAJE (incluye eliminados PARA TODOS, excluye eliminados PARA MÍ)
+        (SELECT m2.id 
+         FROM messages m2
+         WHERE (
+           (m2.sender_id = ? AND m2.receiver_id = u.id AND m2.deleted_by_sender = 0)
+           OR 
+           (m2.sender_id = u.id AND m2.receiver_id = ? AND m2.deleted_by_receiver = 0)
+         )
+         ORDER BY m2.timestamp DESC
+         LIMIT 1
+        ) as last_message_id,
+        
+        (SELECT m2.encrypted_content 
+         FROM messages m2
+         WHERE (
+           (m2.sender_id = ? AND m2.receiver_id = u.id AND m2.deleted_by_sender = 0)
+           OR 
+           (m2.sender_id = u.id AND m2.receiver_id = ? AND m2.deleted_by_receiver = 0)
+         )
+         ORDER BY m2.timestamp DESC
+         LIMIT 1
+        ) as last_message_content,
+        
+        (SELECT m2.iv 
+         FROM messages m2
+         WHERE (
+           (m2.sender_id = ? AND m2.receiver_id = u.id AND m2.deleted_by_sender = 0)
+           OR 
+           (m2.sender_id = u.id AND m2.receiver_id = ? AND m2.deleted_by_receiver = 0)
+         )
+         ORDER BY m2.timestamp DESC
+         LIMIT 1
+        ) as last_message_iv,
+        
+        (SELECT m2.sender_id 
+         FROM messages m2
+         WHERE (
+           (m2.sender_id = ? AND m2.receiver_id = u.id AND m2.deleted_by_sender = 0)
+           OR 
+           (m2.sender_id = u.id AND m2.receiver_id = ? AND m2.deleted_by_receiver = 0)
+         )
+         ORDER BY m2.timestamp DESC
+         LIMIT 1
+        ) as last_message_sender_id,
+        
+        (SELECT m2.timestamp 
+         FROM messages m2
+         WHERE (
+           (m2.sender_id = ? AND m2.receiver_id = u.id AND m2.deleted_by_sender = 0)
+           OR 
+           (m2.sender_id = u.id AND m2.receiver_id = ? AND m2.deleted_by_receiver = 0)
+         )
+         ORDER BY m2.timestamp DESC
+         LIMIT 1
+        ) as last_message_at,
+        
         CASE 
           WHEN c.user1_id = ? THEN c.unread_count_user1
           ELSE c.unread_count_user2
         END as unread_count,
+        
         CASE 
           WHEN u.status = 'online' THEN TRUE
           ELSE FALSE
         END as is_online,
+        
         CASE 
           WHEN cnt.id IS NULL THEN FALSE
           ELSE TRUE
         END as has_contact
+        
       FROM conversations c
       INNER JOIN users u ON (
         (c.user1_id = ? AND u.id = c.user2_id)
@@ -152,15 +197,18 @@ export class ConversationRepository {
         (c.user1_id = ? AND cnt.user_id = ? AND cnt.contact_user_id = c.user2_id)
         OR (c.user2_id = ? AND cnt.user_id = ? AND cnt.contact_user_id = c.user1_id)
       )
-      LEFT JOIN messages m ON c.last_message_id = m.id
       WHERE c.user1_id = ? OR c.user2_id = ?
-      ORDER BY c.last_message_at DESC`,
+      ORDER BY last_message_at DESC`,
       [
-        userId, // CASE WHEN
-        userId, // JOIN users primer OR
-        userId, // JOIN users segundo OR
-        userId, userId, // LEFT JOIN contacts primer OR
-        userId, userId, // LEFT JOIN contacts segundo OR
+        // Subconsultas (10 veces userId)
+        userId, userId, // last_message_id
+        userId, userId, // last_message_content
+        userId, userId, // last_message_iv
+        userId, userId, // last_message_sender_id
+        userId, userId, // last_message_at
+        userId,         // unread_count
+        userId, userId, // JOIN users
+        userId, userId, userId, userId, // LEFT JOIN contacts
         userId, userId  // WHERE
       ]
     );
@@ -176,6 +224,7 @@ export class ConversationRepository {
       last_message_id: row.last_message_id,
       last_message_content: row.last_message_content,
       last_message_iv: row.last_message_iv,
+      last_message_sender_id: row.last_message_sender_id,
       last_message_at: row.last_message_at,
       unread_count: row.unread_count,
       is_online: row.is_online,
@@ -183,9 +232,6 @@ export class ConversationRepository {
     })) as ConversationWithContact[];
   }
 
-  /**
-   * Verificar si existe una conversación entre dos usuarios
-   */
   async conversationExists(user1Id: number, user2Id: number): Promise<boolean> {
     const [smallerId, largerId] = user1Id < user2Id 
       ? [user1Id, user2Id] 

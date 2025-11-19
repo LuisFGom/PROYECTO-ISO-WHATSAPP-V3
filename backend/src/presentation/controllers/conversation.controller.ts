@@ -14,7 +14,7 @@ export class ConversationController {
   }
 
   /**
-   * Obtener todas las conversaciones del usuario autenticado
+   * 🔥 MEJORADO: Obtener conversaciones con mensajes editados/eliminados correctamente
    */
   async getUserConversations(req: Request, res: Response): Promise<void> {
     try {
@@ -30,27 +30,43 @@ export class ConversationController {
       // Desencriptar el último mensaje de cada conversación
       const conversationsWithDecryptedMessages = conversations.map(conv => {
         let lastMessagePreview = null;
+        let isOwnMessage = false; // 🔥 NUEVO: Detectar si el mensaje es del usuario
 
-        // 🔥 NUEVO: Verificar si el mensaje fue eliminado para todos
-        if (conv.last_message_content === '[Este mensaje fue eliminado]' || 
-            conv.last_message_content === 'Este mensaje fue eliminado') {
+        // 🔥 Verificar quién envió el último mensaje
+        if (conv.last_message_sender_id) {
+          isOwnMessage = conv.last_message_sender_id === userId;
+        }
+
+        // 🔥 Verificar si el mensaje fue eliminado para todos
+        if (conv.last_message_content === '[Este mensaje fue eliminado]') {
           lastMessagePreview = 'Este mensaje fue eliminado';
-        } else if (conv.last_message_content && conv.last_message_iv) {
+        } 
+        // Si hay contenido y IV válidos, desencriptar
+        else if (conv.last_message_content && conv.last_message_iv) {
           try {
             // Desencriptar el último mensaje
             const decrypted = this.encryptionService.decrypt(
               conv.last_message_content,
               conv.last_message_iv
             );
+
+            // 🔥 NUEVO: Agregar "Tú: " si es mensaje propio
+            const prefix = isOwnMessage ? 'Tú: ' : '';
             
             // Preview de 50 caracteres
-            lastMessagePreview = decrypted.length > 50 
+            const messageText = decrypted.length > 50 
               ? decrypted.substring(0, 50) + '...' 
               : decrypted;
+
+            lastMessagePreview = prefix + messageText;
           } catch (error) {
             console.error('Error al desencriptar preview:', error);
             lastMessagePreview = 'Mensaje encriptado';
           }
+        }
+        // Si no hay mensaje válido
+        else {
+          lastMessagePreview = null;
         }
 
         return {

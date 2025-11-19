@@ -132,7 +132,7 @@ export class SocketService {
         }
       });
 
-      // 🔥 NUEVO: Editar mensaje
+      // 🔥 CORREGIDO: Editar mensaje con notificación a AMBOS usuarios
       socket.on('chat:edit-message', async (data: {
         messageId: number;
         newContent: string;
@@ -152,7 +152,10 @@ export class SocketService {
 
           callback({ success: true, message: updatedMessage });
 
-          // Notificar al otro usuario sobre la edición
+          // 🔥 CRÍTICO: Notificar al EMISOR (quien editó) para actualizar su lista
+          socket.emit('chat:message-edited', updatedMessage);
+
+          // 🔥 Notificar al RECEPTOR (el otro usuario)
           const recipientId = updatedMessage.sender_id === userId 
             ? updatedMessage.receiver_id 
             : updatedMessage.sender_id;
@@ -162,7 +165,7 @@ export class SocketService {
             this.io.to(recipientSocketId).emit('chat:message-edited', updatedMessage);
           }
 
-          console.log(`✏️ Mensaje ${data.messageId} editado por usuario ${userId}`);
+          console.log(`✏️ Mensaje ${data.messageId} editado por usuario ${userId} y notificado a ambos`);
         } catch (error: any) {
           console.error('❌ Error al editar mensaje:', error);
           callback({ success: false, error: error.message });
@@ -235,10 +238,9 @@ export class SocketService {
         }
       });
 
-      // 🔥 MEJORADO: Eliminar mensaje con soporte para "todos" o "para mí"
       socket.on('chat:delete-message', async (data: {
         messageId: number;
-        deleteForAll?: boolean; // 🔥 NUEVO parámetro
+        deleteForAll?: boolean;
       }, callback) => {
         try {
           const userId = this.getUserIdBySocketId(socket.id);
@@ -255,19 +257,13 @@ export class SocketService {
 
           callback({ success: true });
 
-          // Si se eliminó para todos, notificar al otro usuario
           if (data.deleteForAll) {
-            // Buscar el mensaje para saber a quién notificar
-            const messages = await this.chatService.getChatHistory(userId, userId, 1, 0);
-            // Esta es una simplificación, deberías obtener el receiverId del mensaje
-            // Por ahora emitimos a todos
             this.io.emit('chat:message-deleted', { 
               messageId: data.messageId,
               deleteForAll: true 
             });
             console.log(`🗑️ Mensaje ${data.messageId} eliminado PARA TODOS`);
           } else {
-            // Solo notificar al usuario actual
             socket.emit('chat:message-deleted', { 
               messageId: data.messageId,
               deleteForAll: false 
