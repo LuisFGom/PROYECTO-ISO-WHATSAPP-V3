@@ -1,17 +1,17 @@
 // frontend/src/infrastructure/socket/socketService.ts
 import { io, Socket } from 'socket.io-client';
 
-// 📦 Interfaces para mensajes encriptados
 export interface EncryptedMessage {
   id: number;
   sender_id: number;
   receiver_id: number;
-  content: string; // Ya viene desencriptado desde el backend
+  content: string;
   timestamp: Date;
   is_read: boolean;
+  edited_at: Date | null; // 🔥 NUEVO
+  is_deleted_for_all: boolean; // 🔥 NUEVO
 }
 
-// 🔧 CORRECCIÓN: Removido el genérico T no utilizado
 export interface SocketResponse {
   success: boolean;
   error?: string;
@@ -24,7 +24,6 @@ class SocketService {
   private socket: Socket | null = null;
   private userId: number | null = null;
 
-  // 🔌 Conectar al servidor
   connect(token: string, userId: number) {
     if (this.socket?.connected) {
       console.log('⚠️ Ya existe una conexión activa');
@@ -50,7 +49,6 @@ class SocketService {
 
     this.userId = userId;
 
-    // Eventos de conexión
     this.socket.on('connect', () => {
       console.log('✅ Conectado al servidor Socket.IO');
       this.socket?.emit('authenticate', userId);
@@ -77,7 +75,6 @@ class SocketService {
     });
   }
 
-  // 🔌 Desconectar
   disconnect() {
     if (this.socket) {
       this.socket.disconnect();
@@ -87,9 +84,8 @@ class SocketService {
     }
   }
 
-  // ==================== MÉTODOS EXISTENTES (NO MODIFICADOS) ====================
+  // ==================== MÉTODOS EXISTENTES ====================
 
-  // 📨 Enviar mensaje (tu método actual - MANTENER)
   sendMessage(to: number, content: string) {
     if (!this.socket || !this.userId) {
       console.error('❌ Socket no conectado');
@@ -104,7 +100,6 @@ class SocketService {
     });
   }
 
-  // 👂 Escuchar mensajes entrantes (tu método actual - MANTENER)
   onMessageReceive(callback: (data: any) => void) {
     this.socket?.on('message:receive', callback);
   }
@@ -113,7 +108,6 @@ class SocketService {
     this.socket?.on('message:sent', callback);
   }
 
-  // ⌨️ Indicar que estás escribiendo (tu método actual - MANTENER)
   startTyping(to: number) {
     if (!this.userId) return;
     this.socket?.emit('typing:start', { from: this.userId, to });
@@ -132,7 +126,6 @@ class SocketService {
     this.socket?.on('typing:stop', callback);
   }
 
-  // 👂 Escuchar usuarios online/offline (tu método actual - MANTENER)
   onUserOnline(callback: (data: { userId: number }) => void) {
     this.socket?.on('user:online', callback);
   }
@@ -141,7 +134,6 @@ class SocketService {
     this.socket?.on('user:offline', callback);
   }
 
-  // ✅ Marcar mensaje como leído (tu método actual - MANTENER)
   markAsRead(messageId: number, userId: number) {
     this.socket?.emit('message:read', { messageId, userId });
   }
@@ -150,11 +142,8 @@ class SocketService {
     this.socket?.on('message:read', callback);
   }
 
-  // ==================== NUEVOS MÉTODOS DE CHAT ENCRIPTADO ====================
+  // ==================== MÉTODOS DE CHAT ENCRIPTADO ====================
 
-  /**
-   * Enviar mensaje encriptado (NUEVO)
-   */
   sendEncryptedMessage(receiverId: number, content: string): Promise<EncryptedMessage> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -174,9 +163,32 @@ class SocketService {
     });
   }
 
-  /**
-   * Cargar historial de chat (NUEVO)
-   */
+  // 🔥 NUEVO: Editar mensaje
+  editMessage(messageId: number, newContent: string): Promise<EncryptedMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('chat:edit-message',
+        { messageId, newContent },
+        (response: SocketResponse) => {
+          if (response.success && response.message) {
+            console.log(`✏️ Mensaje ${messageId} editado exitosamente`);
+            resolve(response.message);
+          } else {
+            reject(new Error(response.error || 'Error al editar mensaje'));
+          }
+        }
+      );
+    });
+  }
+
+  // 🔥 NUEVO: Escuchar ediciones de mensajes
+  onMessageEdited(callback: (message: EncryptedMessage) => void): void {
+    this.socket?.on('chat:message-edited', callback);
+  }
+
   loadChatHistory(
     contactId: number,
     limit: number = 50,
@@ -200,9 +212,6 @@ class SocketService {
     });
   }
 
-  /**
-   * Marcar mensajes como leídos (NUEVO)
-   */
   markChatMessagesAsRead(senderId: number): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -222,19 +231,18 @@ class SocketService {
     });
   }
 
-  /**
-   * Eliminar mensaje (NUEVO)
-   */
-  deleteChatMessage(messageId: number): Promise<void> {
+  // 🔥 MEJORADO: Eliminar mensaje con opción de "para todos"
+  deleteChatMessage(messageId: number, deleteForAll: boolean = false): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
         return reject(new Error('Socket no conectado'));
       }
 
       this.socket.emit('chat:delete-message',
-        { messageId },
+        { messageId, deleteForAll },
         (response: SocketResponse) => {
           if (response.success) {
+            console.log(`🗑️ Mensaje ${messageId} eliminado ${deleteForAll ? 'PARA TODOS' : 'PARA MÍ'}`);
             resolve();
           } else {
             reject(new Error(response.error || 'Error al eliminar mensaje'));
@@ -244,9 +252,6 @@ class SocketService {
     });
   }
 
-  /**
-   * Obtener conteo de mensajes no leídos (NUEVO)
-   */
   getUnreadCount(senderId?: number): Promise<number> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -266,35 +271,22 @@ class SocketService {
     });
   }
 
-  /**
-   * Escuchar nuevos mensajes encriptados (NUEVO)
-   */
   onNewEncryptedMessage(callback: (message: EncryptedMessage) => void): void {
     this.socket?.on('chat:new-message', callback);
   }
 
-  /**
-   * Escuchar cuando mensajes son leídos (NUEVO)
-   */
   onChatMessagesRead(callback: (data: { readBy: number }) => void): void {
     this.socket?.on('chat:messages-read', callback);
   }
 
-  /**
-   * Escuchar cuando un mensaje es eliminado (NUEVO)
-   */
-  onChatMessageDeleted(callback: (data: { messageId: number }) => void): void {
+  onChatMessageDeleted(callback: (data: { messageId: number; deleteForAll: boolean }) => void): void {
     this.socket?.on('chat:message-deleted', callback);
   }
 
-  /**
-   * Remover todos los listeners (ACTUALIZADO)
-   */
   removeAllListeners(): void {
     this.socket?.removeAllListeners();
   }
 
-  // 📊 Estado de la conexión
   get isConnected(): boolean {
     return this.socket?.connected || false;
   }

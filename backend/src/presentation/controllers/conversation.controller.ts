@@ -31,7 +31,11 @@ export class ConversationController {
       const conversationsWithDecryptedMessages = conversations.map(conv => {
         let lastMessagePreview = null;
 
-        if (conv.last_message_content && conv.last_message_iv) {
+        // 🔥 NUEVO: Verificar si el mensaje fue eliminado para todos
+        if (conv.last_message_content === '[Este mensaje fue eliminado]' || 
+            conv.last_message_content === 'Este mensaje fue eliminado') {
+          lastMessagePreview = 'Este mensaje fue eliminado';
+        } else if (conv.last_message_content && conv.last_message_iv) {
           try {
             // Desencriptar el último mensaje
             const decrypted = this.encryptionService.decrypt(

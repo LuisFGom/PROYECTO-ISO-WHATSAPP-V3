@@ -6,11 +6,13 @@ import { EncryptionService } from '../../infrastructure/services/encryption.serv
 export interface SendMessageDTO {
   senderId: number;
   receiverId: number;
-  content: string; // Texto plano
+  content: string;
 }
 
 export interface DecryptedMessage extends Omit<Message, 'encrypted_content' | 'iv'> {
-  content: string; // Texto desencriptado
+  content: string;
+  edited_at: Date | null;
+  is_deleted_for_all: boolean;
 }
 
 export class ChatService {
@@ -27,7 +29,6 @@ export class ChatService {
    * Enviar un mensaje (lo encripta antes de guardar y actualiza conversación)
    */
   async sendMessage(data: SendMessageDTO): Promise<DecryptedMessage> {
-    // Validaciones
     if (!data.content || data.content.trim().length === 0) {
       throw new Error('El mensaje no puede estar vacío');
     }
@@ -36,10 +37,8 @@ export class ChatService {
       throw new Error('No puedes enviarte mensajes a ti mismo');
     }
 
-    // Encriptar el contenido
     const { encryptedContent, iv } = this.encryptionService.encrypt(data.content);
 
-    // Crear mensaje en BD
     const messageData: CreateMessageDTO = {
       sender_id: data.senderId,
       receiver_id: data.receiverId,
@@ -49,21 +48,39 @@ export class ChatService {
 
     const message = await this.messageRepository.create(messageData);
 
-    // 🔥 NUEVO: Crear/Actualizar conversación
     await this.conversationRepository.createOrUpdate(
       data.senderId,
       data.receiverId,
       message.id
     );
 
-    // 🔥 NUEVO: Incrementar contador de no leídos para el receptor
     await this.conversationRepository.incrementUnreadCount(
       data.receiverId,
       data.senderId
     );
 
-    // Retornar mensaje desencriptado para el cliente
     return this.decryptMessage(message);
+  }
+
+  /**
+   * 🔥 NUEVO: Editar un mensaje
+   */
+  async editMessage(messageId: number, userId: number, newContent: string): Promise<DecryptedMessage> {
+    if (!newContent || newContent.trim().length === 0) {
+      throw new Error('El mensaje no puede estar vacío');
+    }
+
+    const { encryptedContent, iv } = this.encryptionService.encrypt(newContent);
+
+    const updatedMessage = await this.messageRepository.updateMessage(
+      messageId,
+      userId,
+      encryptedContent,
+      iv
+    );
+
+    console.log(`✏️ Mensaje ${messageId} editado exitosamente`);
+    return this.decryptMessage(updatedMessage);
   }
 
   /**
@@ -82,7 +99,6 @@ export class ChatService {
       offset
     );
 
-    // Desencriptar todos los mensajes
     return messages.map(msg => this.decryptMessage(msg));
   }
 
@@ -91,8 +107,6 @@ export class ChatService {
    */
   async markMessagesAsRead(receiverId: number, senderId: number): Promise<void> {
     await this.messageRepository.markAsRead(receiverId, senderId);
-    
-    // 🔥 NUEVO: Resetear contador de no leídos
     await this.conversationRepository.resetUnreadCount(receiverId, senderId);
   }
 
@@ -104,10 +118,10 @@ export class ChatService {
   }
 
   /**
-   * Eliminar mensaje
+   * 🔥 MEJORADO: Eliminar mensaje (soporta "para todos" o "para mí")
    */
-  async deleteMessage(messageId: number, userId: number): Promise<void> {
-    await this.messageRepository.deleteMessage(messageId, userId);
+  async deleteMessage(messageId: number, userId: number, deleteForAll: boolean = false): Promise<void> {
+    await this.messageRepository.deleteMessage(messageId, userId, deleteForAll);
   }
 
   /**
@@ -115,6 +129,16 @@ export class ChatService {
    */
   private decryptMessage(message: Message): DecryptedMessage {
     try {
+      if (message.is_deleted_for_all) {
+        const { encrypted_content, iv, ...rest } = message;
+        return {
+          ...rest,
+          content: 'Este mensaje fue eliminado',
+          edited_at: message.edited_at,
+          is_deleted_for_all: true
+        };
+      }
+
       const decryptedContent = this.encryptionService.decrypt(
         message.encrypted_content,
         message.iv
@@ -124,14 +148,18 @@ export class ChatService {
 
       return {
         ...rest,
-        content: decryptedContent
+        content: decryptedContent,
+        edited_at: message.edited_at,
+        is_deleted_for_all: false
       };
     } catch (error) {
       console.error('❌ Error al desencriptar mensaje:', error);
       const { encrypted_content, iv, ...rest } = message;
       return {
         ...rest,
-        content: '[Mensaje encriptado - error al desencriptar]'
+        content: '[Mensaje encriptado - error al desencriptar]',
+        edited_at: message.edited_at,
+        is_deleted_for_all: false
       };
     }
   }

@@ -11,6 +11,8 @@ export interface Message {
   is_read: boolean;
   deleted_by_sender: boolean;
   deleted_by_receiver: boolean;
+  edited_at: Date | null; // 🔥 NUEVO
+  is_deleted_for_all: boolean; // 🔥 NUEVO
 }
 
 export interface CreateMessageDTO {
@@ -43,7 +45,6 @@ export class MessageRepository {
 
   /**
    * Obtener historial de mensajes entre dos usuarios
-   * 🔥 SOLUCIÓN: LIMIT y OFFSET interpolados directamente (bug de mysql2)
    */
   async getConversationHistory(
     userId: number,
@@ -51,7 +52,6 @@ export class MessageRepository {
     limit: number = 50,
     offset: number = 0
   ): Promise<Message[]> {
-    // Conversión y validación estricta
     const userIdNum = Number(userId);
     const contactIdNum = Number(contactId);
     const limitNum = Number(limit);
@@ -64,7 +64,6 @@ export class MessageRepository {
       offset: offsetNum
     });
 
-    // Validar que sean números válidos
     if (
       !Number.isInteger(userIdNum) || 
       !Number.isInteger(contactIdNum) || 
@@ -80,28 +79,25 @@ export class MessageRepository {
     }
 
     try {
-      // 🔥 CRÍTICO: LIMIT y OFFSET interpolados directamente
-      // MySQL2 tiene un bug con prepared statements para LIMIT/OFFSET
       const query = `
         SELECT * FROM messages 
         WHERE (
-          (sender_id = ? AND receiver_id = ? AND deleted_by_sender = 0)
+          (sender_id = ? AND receiver_id = ? AND deleted_by_sender = 0 AND is_deleted_for_all = 0)
           OR 
-          (sender_id = ? AND receiver_id = ? AND deleted_by_receiver = 0)
+          (sender_id = ? AND receiver_id = ? AND deleted_by_receiver = 0 AND is_deleted_for_all = 0)
         )
         ORDER BY timestamp ASC
         LIMIT ${limitNum} OFFSET ${offsetNum}
       `;
 
       const params = [
-        userIdNum,     // sender_id primer OR
-        contactIdNum,  // receiver_id primer OR
-        contactIdNum,  // sender_id segundo OR
-        userIdNum      // receiver_id segundo OR
+        userIdNum,
+        contactIdNum,
+        contactIdNum,
+        userIdNum
       ];
 
       console.log('📝 Ejecutando query con params:', params);
-      console.log('📝 Query completa:', query);
 
       const [messages] = await this.db.execute<RowDataPacket[]>(query, params);
 
@@ -116,6 +112,45 @@ export class MessageRepository {
       });
       throw error;
     }
+  }
+
+  /**
+   * 🔥 NUEVO: Editar mensaje (actualiza contenido encriptado)
+   */
+  async updateMessage(messageId: number, userId: number, encryptedContent: string, iv: string): Promise<Message> {
+    const messageIdNum = Number(messageId);
+    const userIdNum = Number(userId);
+
+    // Verificar que el usuario es el emisor
+    const [message] = await this.db.execute<RowDataPacket[]>(
+      'SELECT sender_id FROM messages WHERE id = ?',
+      [messageIdNum]
+    );
+
+    if (message.length === 0) {
+      throw new Error('Mensaje no encontrado');
+    }
+
+    if (message[0].sender_id !== userIdNum) {
+      throw new Error('No tienes permiso para editar este mensaje');
+    }
+
+    // Actualizar mensaje
+    await this.db.execute(
+      `UPDATE messages 
+       SET encrypted_content = ?, iv = ?, edited_at = NOW() 
+       WHERE id = ?`,
+      [encryptedContent, iv, messageIdNum]
+    );
+
+    // Retornar mensaje actualizado
+    const [updated] = await this.db.execute<RowDataPacket[]>(
+      'SELECT * FROM messages WHERE id = ?',
+      [messageIdNum]
+    );
+
+    console.log(`✏️ Mensaje ${messageIdNum} editado por usuario ${userIdNum}`);
+    return updated[0] as Message;
   }
 
   /**
@@ -142,7 +177,7 @@ export class MessageRepository {
     const userIdNum = Number(userId);
     
     let query = `SELECT COUNT(*) as count FROM messages 
-                 WHERE receiver_id = ? AND is_read = 0 AND deleted_by_receiver = 0`;
+                 WHERE receiver_id = ? AND is_read = 0 AND deleted_by_receiver = 0 AND is_deleted_for_all = 0`;
     const params: number[] = [userIdNum];
 
     if (senderId) {
@@ -156,9 +191,9 @@ export class MessageRepository {
   }
 
   /**
-   * Eliminar mensaje (soft delete)
+   * 🔥 MEJORADO: Eliminar mensaje con soporte para "eliminar para todos"
    */
-  async deleteMessage(messageId: number, userId: number): Promise<void> {
+  async deleteMessage(messageId: number, userId: number, deleteForAll: boolean = false): Promise<void> {
     const messageIdNum = Number(messageId);
     const userIdNum = Number(userId);
 
@@ -173,16 +208,34 @@ export class MessageRepository {
 
     const msg = message[0];
 
+    // 🔥 ELIMINAR PARA TODOS (solo si eres el emisor)
+    if (deleteForAll) {
+      if (msg.sender_id !== userIdNum) {
+        throw new Error('Solo el emisor puede eliminar para todos');
+      }
+
+      await this.db.execute(
+        'UPDATE messages SET is_deleted_for_all = 1, encrypted_content = ?, iv = ? WHERE id = ?',
+        ['[Este mensaje fue eliminado]', '', messageIdNum]
+      );
+
+      console.log(`🗑️ Mensaje ${messageIdNum} eliminado PARA TODOS por usuario ${userIdNum}`);
+      return;
+    }
+
+    // 🔥 ELIMINAR SOLO PARA MÍ
     if (msg.sender_id === userIdNum) {
       await this.db.execute(
         'UPDATE messages SET deleted_by_sender = 1 WHERE id = ?',
         [messageIdNum]
       );
+      console.log(`🗑️ Mensaje ${messageIdNum} eliminado para emisor ${userIdNum}`);
     } else if (msg.receiver_id === userIdNum) {
       await this.db.execute(
         'UPDATE messages SET deleted_by_receiver = 1 WHERE id = ?',
         [messageIdNum]
       );
+      console.log(`🗑️ Mensaje ${messageIdNum} eliminado para receptor ${userIdNum}`);
     }
 
     // Si ambos eliminaron, borrar físicamente
@@ -193,6 +246,7 @@ export class MessageRepository {
 
     if (updated[0].deleted_by_sender && updated[0].deleted_by_receiver) {
       await this.db.execute('DELETE FROM messages WHERE id = ?', [messageIdNum]);
+      console.log(`🗑️ Mensaje ${messageIdNum} eliminado FÍSICAMENTE de la BD`);
     }
   }
 }

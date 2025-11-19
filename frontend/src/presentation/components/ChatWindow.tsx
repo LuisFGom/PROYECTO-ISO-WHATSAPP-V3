@@ -7,8 +7,8 @@ interface ChatWindowProps {
   contactId: number;
   contactName: string;
   contactAvatar?: string;
-  contactStatus?: 'online' | 'offline'; // 🔥 NUEVO: Estado del contacto
-  contactLastSeen?: Date | null; // 🔥 NUEVO: Última vez visto
+  contactStatus?: 'online' | 'offline';
+  contactLastSeen?: Date | null;
   onBack?: () => void;
   onMessageSent?: (isNewConversation: boolean) => void;
 }
@@ -17,8 +17,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   contactId,
   contactName,
   contactAvatar,
-  contactStatus = 'offline', // 🔥 NUEVO: Default offline
-  contactLastSeen, // 🔥 NUEVO
+  contactStatus = 'offline',
+  contactLastSeen,
   onBack,
   onMessageSent
 }) => {
@@ -32,6 +32,24 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const typingTimeoutRef = useRef<number | null>(null);
   const [hasExistingMessages, setHasExistingMessages] = useState(false);
   const processedMessageIds = useRef<Set<number>>(new Set());
+
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [menuPosition, setMenuPosition] = useState<'top' | 'bottom'>('bottom');
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpenMenuId(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     loadChatHistory();
@@ -53,6 +71,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         if (message.sender_id === contactId) {
           void socketService.markChatMessagesAsRead(contactId);
         }
+      }
+    };
+
+    const handleMessageEdited = (editedMessage: EncryptedMessage) => {
+      console.log(`✏️ Mensaje editado: ${editedMessage.id}`);
+      setMessages(prev => 
+        prev.map(msg => msg.id === editedMessage.id ? editedMessage : msg)
+      );
+    };
+
+    const handleMessageDeleted = (data: { messageId: number; deleteForAll: boolean }) => {
+      console.log(`🗑️ Mensaje eliminado: ${data.messageId}, para todos: ${data.deleteForAll}`);
+      
+      if (data.deleteForAll) {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg.id === data.messageId
+              ? { ...msg, content: 'Este mensaje fue eliminado', is_deleted_for_all: true }
+              : msg
+          )
+        );
+      } else {
+        setMessages(prev => prev.filter(msg => msg.id !== data.messageId));
+        processedMessageIds.current.delete(data.messageId);
       }
     };
 
@@ -81,6 +123,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
 
     socketService.onNewEncryptedMessage(handleNewMessage);
+    socketService.onMessageEdited(handleMessageEdited);
+    socketService.onChatMessageDeleted(handleMessageDeleted);
     socketService.onChatMessagesRead(handleMessagesRead);
     socketService.onTypingStart(handleTypingStart);
     socketService.onTypingStop(handleTypingStop);
@@ -89,6 +133,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       const socket = socketService.getSocket();
       if (socket) {
         socket.off('chat:new-message', handleNewMessage);
+        socket.off('chat:message-edited', handleMessageEdited);
+        socket.off('chat:message-deleted', handleMessageDeleted);
         socket.off('chat:messages-read', handleMessagesRead);
         socket.off('typing:start', handleTypingStart);
         socket.off('typing:stop', handleTypingStop);
@@ -103,14 +149,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, [contactId, user?.id]);
 
-  // 🔥 CORRECCIÓN: Scroll solo para nuevos mensajes (smooth)
   useEffect(() => {
     if (!isLoading && messages.length > 0) {
       scrollToBottom('smooth');
     }
   }, [messages]);
 
-  // 🔥 NUEVO: Función de scroll mejorada
   const scrollToBottom = (behavior: 'auto' | 'smooth' = 'auto') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
@@ -131,7 +175,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       console.error('Error al cargar historial:', error);
     } finally {
       setIsLoading(false);
-      // 🔥 CORRECCIÓN: Scroll inmediato al cargar historial
       setTimeout(() => scrollToBottom('auto'), 100);
     }
   };
@@ -190,6 +233,74 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
+  // 🔥 CORREGIDO: Solo el ÚLTIMO mensaje abre hacia arriba
+  const handleOpenMenu = (messageId: number, messageIndex: number) => {
+    // Verificar si es el último mensaje de la lista
+    const isLastMessage = messageIndex === messages.length - 1;
+    
+    // Solo el ÚLTIMO abre hacia arriba, todos los demás hacia abajo
+    setMenuPosition(isLastMessage ? 'top' : 'bottom');
+    setOpenMenuId(openMenuId === messageId ? null : messageId);
+  };
+
+  const handleStartEdit = (message: EncryptedMessage) => {
+    setEditingMessageId(message.id);
+    setEditingContent(message.content);
+    setOpenMenuId(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingContent.trim() || !editingMessageId) return;
+
+    try {
+      const updatedMessage = await socketService.editMessage(editingMessageId, editingContent.trim());
+      setMessages(prev => 
+        prev.map(msg => msg.id === updatedMessage.id ? updatedMessage : msg)
+      );
+      setEditingMessageId(null);
+      setEditingContent('');
+    } catch (error) {
+      console.error('Error al editar mensaje:', error);
+      alert('Error al editar mensaje');
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingContent('');
+  };
+
+  const handleDeleteForMe = async (messageId: number) => {
+    try {
+      await socketService.deleteChatMessage(messageId, false);
+      setMessages(prev => prev.filter(msg => msg.id !== messageId));
+      processedMessageIds.current.delete(messageId);
+      setOpenMenuId(null);
+    } catch (error) {
+      console.error('Error al eliminar mensaje:', error);
+      alert('Error al eliminar mensaje');
+    }
+  };
+
+  const handleDeleteForAll = async (messageId: number) => {
+    if (!confirm('¿Eliminar este mensaje para todos?')) return;
+
+    try {
+      await socketService.deleteChatMessage(messageId, true);
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === messageId
+            ? { ...msg, content: 'Este mensaje fue eliminado', is_deleted_for_all: true }
+            : msg
+        )
+      );
+      setOpenMenuId(null);
+    } catch (error) {
+      console.error('Error al eliminar mensaje:', error);
+      alert('Error al eliminar mensaje');
+    }
+  };
+
   const formatMessageTime = (timestamp: Date) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString('es-ES', {
@@ -198,7 +309,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     });
   };
 
-  // 🔥 NUEVO: Función para formatear última vez visto
   const formatLastSeen = (lastSeen: Date | null | undefined) => {
     if (!lastSeen) return 'Última vez hace mucho';
     
@@ -300,33 +410,118 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           <div className="space-y-2">
             {messages.map((message, index) => {
               const isOwnMessage = message.sender_id === user.id;
+              const isEditing = editingMessageId === message.id;
 
               return (
                 <div
                   key={`${message.id}-${index}`}
-                  className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} group relative`}
                 >
                   <div
                     className={`max-w-xs px-4 py-2 rounded-lg shadow ${
                       isOwnMessage
                         ? 'bg-[#dcf8c6]'
                         : 'bg-white'
-                    }`}
+                    } ${message.is_deleted_for_all ? 'italic text-gray-500' : ''}`}
                   >
-                    <p className="text-sm text-gray-800 break-words">{message.content}</p>
-                    <div className="flex items-center justify-end gap-1 mt-1">
-                      <span className="text-xs text-gray-500">
-                        {formatMessageTime(message.timestamp)}
-                      </span>
-                      {isOwnMessage && (
-                        <span 
-                          className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`}
+                    {isEditing ? (
+                      <div className="flex flex-col gap-2">
+                        <input
+                          type="text"
+                          value={editingContent}
+                          onChange={(e) => setEditingContent(e.target.value)}
+                          className="px-2 py-1 border rounded text-sm"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveEdit();
+                            if (e.key === 'Escape') handleCancelEdit();
+                          }}
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSaveEdit}
+                            className="px-3 py-1 bg-whatsapp-green text-white text-xs rounded hover:bg-whatsapp-green-dark"
+                          >
+                            ✓ Guardar
+                          </button>
+                          <button
+                            onClick={handleCancelEdit}
+                            className="px-3 py-1 bg-gray-300 text-gray-700 text-xs rounded hover:bg-gray-400"
+                          >
+                            ✕ Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-gray-800 break-words">{message.content}</p>
+                        <div className="flex items-center justify-end gap-1 mt-1">
+                          <span className="text-xs text-gray-500">
+                            {formatMessageTime(message.timestamp)}
+                            {message.edited_at && ' (editado)'}
+                          </span>
+                          {isOwnMessage && (
+                            <span 
+                              className={`text-xs ${message.is_read ? 'text-blue-600' : 'text-gray-500'}`}
+                            >
+                              {message.is_read ? '✓✓' : '✓'}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* 🔥 CORREGIDO: Pasar índice para detectar el último */}
+                  {!message.is_deleted_for_all && !isEditing && (
+                    <div className="relative ml-2 flex items-start">
+                      <button
+                        onClick={() => handleOpenMenu(message.id, index)}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-300 rounded transition mt-1"
+                      >
+                        <svg className="w-4 h-4 text-gray-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM16 12a2 2 0 100-4 2 2 0 000 4z" />
+                        </svg>
+                      </button>
+
+                      {openMenuId === message.id && (
+                        <div 
+                          ref={menuRef}
+                          className={`absolute ${isOwnMessage ? 'right-0' : 'left-0'} bg-white rounded-lg shadow-xl border border-gray-200 z-50 min-w-[180px] ${
+                            menuPosition === 'top' ? 'bottom-8' : 'top-8'
+                          }`}
+                          style={{
+                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                          }}
                         >
-                          {message.is_read ? '✓✓' : '✓'}
-                        </span>
+                          {isOwnMessage && (
+                            <>
+                              <button
+                                onClick={() => handleStartEdit(message)}
+                                className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm flex items-center gap-2 rounded-t-lg"
+                              >
+                                ✏️ Editar
+                              </button>
+                              <button
+                                onClick={() => handleDeleteForAll(message.id)}
+                                className="w-full text-left px-4 py-2 hover:bg-gray-100 text-sm flex items-center gap-2 text-red-600"
+                              >
+                                🗑️ Eliminar para todos
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={() => handleDeleteForMe(message.id)}
+                            className={`w-full text-left px-4 py-2 hover:bg-gray-100 text-sm flex items-center gap-2 ${
+                              isOwnMessage ? '' : 'rounded-t-lg'
+                            } rounded-b-lg`}
+                          >
+                            🗑️ Eliminar para mí
+                          </button>
+                        </div>
                       )}
                     </div>
-                  </div>
+                  )}
                 </div>
               );
             })}

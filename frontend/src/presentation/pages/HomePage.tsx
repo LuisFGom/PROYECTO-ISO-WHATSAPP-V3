@@ -52,15 +52,12 @@ export const HomePage = () => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [view, setView] = useState<'chats' | 'contacts'>('chats');
 
-  // 🔥 NUEVO: Estado para trackear el estado online del contacto seleccionado
   const [selectedContactStatus, setSelectedContactStatus] = useState<'online' | 'offline'>('offline');
   const [selectedContactLastSeen, setSelectedContactLastSeen] = useState<Date | null>(null);
 
-  // 🔥 NUEVO: Actualizar estado del contacto seleccionado cuando cambia
   useEffect(() => {
     if (selectedContact) {
       setSelectedContactStatus(selectedContact.user.status);
-      // Buscar last_seen en la conversación correspondiente
       const conversation = conversations.find(c => c.contact.user_id === selectedContact.user.id);
       if (conversation?.contact.last_seen) {
         setSelectedContactLastSeen(new Date(conversation.contact.last_seen));
@@ -72,7 +69,6 @@ export const HomePage = () => {
     const handleUserOnline = (data: { userId: number }) => {
       console.log(`🟢 Usuario ${data.userId} ahora está ONLINE`);
       
-      // 🔥 CRÍTICO: Actualizar estado INMEDIATAMENTE si es el contacto seleccionado
       if (selectedContactId === data.userId) {
         console.log(`🎯 Actualizando contacto seleccionado ${data.userId} a ONLINE`);
         setSelectedContactStatus('online');
@@ -89,7 +85,6 @@ export const HomePage = () => {
     const handleUserOffline = (data: { userId: number }) => {
       console.log(`⚪ Usuario ${data.userId} ahora está OFFLINE`);
       
-      // 🔥 CRÍTICO: Actualizar estado INMEDIATAMENTE si es el contacto seleccionado
       if (selectedContactId === data.userId) {
         console.log(`🎯 Actualizando contacto seleccionado ${data.userId} a OFFLINE`);
         setSelectedContactStatus('offline');
@@ -116,9 +111,56 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations, refreshContacts, selectedContactId]);
 
-  // 🔥 ELIMINADO: Este useEffect causaba conflictos con ChatWindow
-  // ChatWindow ya maneja los mensajes nuevos correctamente
-  // Solo actualizamos conversaciones cuando se envía un mensaje
+  // 🔥 Listener para nuevos mensajes
+  useEffect(() => {
+    const handleNewMessageForList = () => {
+      console.log('📬 Nuevo mensaje detectado en HomePage, actualizando lista...');
+      silentRefreshConversations();
+    };
+
+    socketService.onNewEncryptedMessage(handleNewMessageForList);
+
+    return () => {
+      const socket = socketService.getSocket();
+      if (socket) {
+        socket.off('chat:new-message', handleNewMessageForList);
+      }
+    };
+  }, [silentRefreshConversations]);
+
+  // 🔥 NUEVO: Listener para mensajes EDITADOS
+  useEffect(() => {
+    const handleMessageEditedForList = () => {
+      console.log('✏️ Mensaje editado detectado en HomePage, actualizando lista...');
+      silentRefreshConversations();
+    };
+
+    socketService.onMessageEdited(handleMessageEditedForList);
+
+    return () => {
+      const socket = socketService.getSocket();
+      if (socket) {
+        socket.off('chat:message-edited', handleMessageEditedForList);
+      }
+    };
+  }, [silentRefreshConversations]);
+
+  // 🔥 NUEVO: Listener para mensajes ELIMINADOS
+  useEffect(() => {
+    const handleMessageDeletedForList = () => {
+      console.log('🗑️ Mensaje eliminado detectado en HomePage, actualizando lista...');
+      silentRefreshConversations();
+    };
+
+    socketService.onChatMessageDeleted(handleMessageDeletedForList);
+
+    return () => {
+      const socket = socketService.getSocket();
+      if (socket) {
+        socket.off('chat:message-deleted', handleMessageDeletedForList);
+      }
+    };
+  }, [silentRefreshConversations]);
 
   const filteredContacts = typeof searchContacts === 'function'
     ? searchContacts(searchQuery) ?? []
@@ -159,7 +201,6 @@ export const HomePage = () => {
     setSelectedContact(contact);
     setSelectedContactId(conversation.contact.user_id);
     
-    // 🔥 NUEVO: Actualizar estado y last_seen
     setSelectedContactStatus(conversation.contact.is_online ? 'online' : 'offline');
     setSelectedContactLastSeen(
       conversation.contact.last_seen ? new Date(conversation.contact.last_seen) : null
@@ -178,7 +219,6 @@ export const HomePage = () => {
     setSelectedContact(contact);
     setSelectedContactId(contact.user.id);
     
-    // 🔥 NUEVO: Actualizar estado
     setSelectedContactStatus(contact.user.status);
     
     setView('chats');
