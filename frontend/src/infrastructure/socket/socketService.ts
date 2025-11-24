@@ -8,16 +8,31 @@ export interface EncryptedMessage {
   content: string;
   timestamp: Date;
   is_read: boolean;
-  edited_at: Date | null; // 🔥 NUEVO
-  is_deleted_for_all: boolean; // 🔥 NUEVO
+  edited_at: Date | null;
+  is_deleted_for_all: boolean;
+}
+
+// 🔥 NUEVO: Mensaje de grupo
+export interface GroupMessage {
+  id: number;
+  groupId: number;
+  senderId: number;
+  content: string;
+  timestamp: Date;
+  editedAt: Date | null;
+  isDeletedForAll: boolean;
+  senderUsername: string;
+  senderEmail: string;
+  senderAvatarUrl: string | null;
 }
 
 export interface SocketResponse {
   success: boolean;
   error?: string;
-  message?: EncryptedMessage;
-  messages?: EncryptedMessage[];
+  message?: EncryptedMessage | GroupMessage;
+  messages?: (EncryptedMessage | GroupMessage)[];
   count?: number;
+  member?: any;
 }
 
 class SocketService {
@@ -84,7 +99,7 @@ class SocketService {
     }
   }
 
-  // ==================== MÉTODOS EXISTENTES ====================
+  // ==================== MÉTODOS EXISTENTES (CHAT 1-A-1) ====================
 
   sendMessage(to: number, content: string) {
     if (!this.socket || !this.userId) {
@@ -142,8 +157,6 @@ class SocketService {
     this.socket?.on('message:read', callback);
   }
 
-  // ==================== MÉTODOS DE CHAT ENCRIPTADO ====================
-
   sendEncryptedMessage(receiverId: number, content: string): Promise<EncryptedMessage> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -154,7 +167,7 @@ class SocketService {
         { receiverId, content },
         (response: SocketResponse) => {
           if (response.success && response.message) {
-            resolve(response.message);
+            resolve(response.message as EncryptedMessage);
           } else {
             reject(new Error(response.error || 'Error al enviar mensaje'));
           }
@@ -163,7 +176,6 @@ class SocketService {
     });
   }
 
-  // 🔥 NUEVO: Editar mensaje
   editMessage(messageId: number, newContent: string): Promise<EncryptedMessage> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -175,7 +187,7 @@ class SocketService {
         (response: SocketResponse) => {
           if (response.success && response.message) {
             console.log(`✏️ Mensaje ${messageId} editado exitosamente`);
-            resolve(response.message);
+            resolve(response.message as EncryptedMessage);
           } else {
             reject(new Error(response.error || 'Error al editar mensaje'));
           }
@@ -184,7 +196,6 @@ class SocketService {
     });
   }
 
-  // 🔥 NUEVO: Escuchar ediciones de mensajes
   onMessageEdited(callback: (message: EncryptedMessage) => void): void {
     this.socket?.on('chat:message-edited', callback);
   }
@@ -203,7 +214,7 @@ class SocketService {
         { contactId, limit, offset },
         (response: SocketResponse) => {
           if (response.success && response.messages) {
-            resolve(response.messages);
+            resolve(response.messages as EncryptedMessage[]);
           } else {
             reject(new Error(response.error || 'Error al cargar historial'));
           }
@@ -231,7 +242,6 @@ class SocketService {
     });
   }
 
-  // 🔥 MEJORADO: Eliminar mensaje con opción de "para todos"
   deleteChatMessage(messageId: number, deleteForAll: boolean = false): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -282,6 +292,187 @@ class SocketService {
   onChatMessageDeleted(callback: (data: { messageId: number; deleteForAll: boolean }) => void): void {
     this.socket?.on('chat:message-deleted', callback);
   }
+
+  // ==================== 🔥 NUEVOS MÉTODOS DE GRUPOS ====================
+
+  sendGroupMessage(groupId: number, content: string): Promise<GroupMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:send-message',
+        { groupId, content },
+        (response: SocketResponse) => {
+          if (response.success && response.message) {
+            resolve(response.message as GroupMessage);
+          } else {
+            reject(new Error(response.error || 'Error al enviar mensaje de grupo'));
+          }
+        }
+      );
+    });
+  }
+
+  editGroupMessage(messageId: number, newContent: string): Promise<GroupMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:edit-message',
+        { messageId, newContent },
+        (response: SocketResponse) => {
+          if (response.success && response.message) {
+            console.log(`✏️ Mensaje de grupo ${messageId} editado exitosamente`);
+            resolve(response.message as GroupMessage);
+          } else {
+            reject(new Error(response.error || 'Error al editar mensaje de grupo'));
+          }
+        }
+      );
+    });
+  }
+
+  deleteGroupMessage(messageId: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:delete-message',
+        { messageId },
+        (response: SocketResponse) => {
+          if (response.success) {
+            console.log(`🗑️ Mensaje de grupo ${messageId} eliminado`);
+            resolve();
+          } else {
+            reject(new Error(response.error || 'Error al eliminar mensaje de grupo'));
+          }
+        }
+      );
+    });
+  }
+
+  loadGroupHistory(
+    groupId: number,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<GroupMessage[]> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:load-history',
+        { groupId, limit, offset },
+        (response: SocketResponse) => {
+          if (response.success && response.messages) {
+            resolve(response.messages as GroupMessage[]);
+          } else {
+            reject(new Error(response.error || 'Error al cargar historial de grupo'));
+          }
+        }
+      );
+    });
+  }
+
+  markGroupMessageAsRead(groupMessageId: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:mark-as-read',
+        { groupMessageId },
+        (response: SocketResponse) => {
+          if (response.success) {
+            resolve();
+          } else {
+            reject(new Error(response.error || 'Error al marcar mensaje como leído'));
+          }
+        }
+      );
+    });
+  }
+
+  addGroupMember(groupId: number, userIdToAdd: number): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:add-member',
+        { groupId, userIdToAdd },
+        (response: SocketResponse) => {
+          if (response.success) {
+            resolve(response.member);
+          } else {
+            reject(new Error(response.error || 'Error al agregar miembro'));
+          }
+        }
+      );
+    });
+  }
+
+  removeGroupMember(groupId: number, userIdToRemove: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        return reject(new Error('Socket no conectado'));
+      }
+
+      this.socket.emit('group:remove-member',
+        { groupId, userIdToRemove },
+        (response: SocketResponse) => {
+          if (response.success) {
+            resolve();
+          } else {
+            reject(new Error(response.error || 'Error al remover miembro'));
+          }
+        }
+      );
+    });
+  }
+
+  startGroupTyping(groupId: number) {
+    if (!this.userId) return;
+    this.socket?.emit('group:typing-start', { groupId });
+  }
+
+  stopGroupTyping(groupId: number) {
+    if (!this.userId) return;
+    this.socket?.emit('group:typing-stop', { groupId });
+  }
+
+  onGroupNewMessage(callback: (message: GroupMessage & { groupId: number }) => void): void {
+    this.socket?.on('group:new-message', callback);
+  }
+
+  onGroupMessageEdited(callback: (message: GroupMessage) => void): void {
+    this.socket?.on('group:message-edited', callback);
+  }
+
+  onGroupMessageDeleted(callback: (data: { messageId: number; groupId: number }) => void): void {
+    this.socket?.on('group:message-deleted', callback);
+  }
+
+  onGroupMemberAdded(callback: (data: { groupId: number; member: any }) => void): void {
+    this.socket?.on('group:member-added', callback);
+  }
+
+  onGroupMemberRemoved(callback: (data: { groupId: number; userId: number }) => void): void {
+    this.socket?.on('group:member-removed', callback);
+  }
+
+  onGroupTypingStart(callback: (data: { groupId: number; userId: number }) => void): void {
+    this.socket?.on('group:typing-start', callback);
+  }
+
+  onGroupTypingStop(callback: (data: { groupId: number; userId: number }) => void): void {
+    this.socket?.on('group:typing-stop', callback);
+  }
+
+  // ==================== FIN DE MÉTODOS DE GRUPOS ====================
 
   removeAllListeners(): void {
     this.socket?.removeAllListeners();

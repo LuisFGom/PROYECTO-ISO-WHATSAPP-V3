@@ -36,6 +36,9 @@ app.use((req, res, next) => {
         console.log(`📡 Recibida petición OPTIONS (Preflight) desde Origin: ${req.headers.origin}`);
     } else if (req.url === '/api/health') {
         console.log(`✅ Recibida petición GET /api/health desde Origin: ${req.headers.origin}`);
+    } else if (req.url.startsWith('/api/groups')) {
+        // 🔥 NUEVO: Log específico para rutas de grupos
+        console.log(`🔥 [GROUPS] ${req.method} ${req.url} desde Origin: ${req.headers.origin}`);
     }
     next();
 });
@@ -71,6 +74,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 // API Routes
+// 🔥 IMPORTANTE: Este import ya incluye las rutas de grupos porque las agregamos en routes/index.ts
 app.use('/api', routes);
 
 // Error handler middleware (debe ir al final)
@@ -82,12 +86,30 @@ console.log('🔌 Socket.IO inicializado');
 
 // 🔥 Iniciar servidor con HTTP (para Socket.IO)
 httpServer.listen(config.port, '0.0.0.0', () => {
+    console.log('');
+    console.log('🚀 ========================================');
     console.log(`🚀 Server running on port ${config.port}`);
     console.log(`📍 http://localhost:${config.port}`);
     console.log(`🌍 Environment: ${config.nodeEnv}`);
     console.log(`🔌 Socket.IO ready`);
+    console.log('📡 Rutas API disponibles:');
+    console.log(`   - GET  /api/health`);
+    console.log(`   - POST /api/auth/login`);
+    console.log(`   - POST /api/auth/register`);
+    console.log(`   - GET  /api/contacts`);
+    console.log(`   - GET  /api/conversations`);
+    console.log(`   - GET  /api/groups 🔥 NUEVO`);
+    console.log(`   - POST /api/groups 🔥 NUEVO`);
+    console.log('🚀 ========================================');
+    console.log('');
 });
 
 // Manejo de errores no capturados
-process.on('unhandledRejection', (reason, promise) => { /* ... */ });
-process.on('uncaughtException', (error) => { /* ... */ });
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    process.exit(1);
+});

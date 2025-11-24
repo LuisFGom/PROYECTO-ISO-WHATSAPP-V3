@@ -2,16 +2,23 @@
 import { useState, useEffect, useRef } from 'react';
 import { UserMenu } from '../components/UserMenu';
 import { AddContactModal } from '../components/AddContactModal';
+import { CreateGroupModal } from '../components/CreateGroupModal';
+import { GroupInfoPanel } from '../components/GroupInfoPanel'; // 🔥 NUEVO
 import { ContactList } from '../components/ContactList';
 import { ChatList } from '../components/ChatList';
+import { GroupList } from '../components/GroupList';
 import { ChatWindow } from '../components/ChatWindow';
+import { GroupChatWindow } from '../components/GroupChatWindow';
 import { useSocketStatus } from '../hooks/useSocketStatus';
 import { useContacts, type Contact } from '../hooks/useContacts';
 import { useConversations, type Conversation } from '../hooks/useConversations';
+import { useGroups, type GroupWithMembers } from '../hooks/useGroups';
 import { socketService } from '../../infrastructure/socket/socketService';
+import { useAuthStore } from '../store/authStore'; // 🔥 NUEVO (para user)
 
 export const HomePage = () => {
   const { isConnected } = useSocketStatus();
+  const { user } = useAuthStore(); // 🔥 NUEVO
 
   const {
     contacts = [],
@@ -31,6 +38,20 @@ export const HomePage = () => {
     removeContactFromConversations
   } = useConversations();
 
+  // 🔥 NUEVO: Hook de grupos CON FUNCIONES ADICIONALES
+  const {
+    groups = [],
+    isLoading: isLoadingGroups = false,
+    refreshGroups,
+    silentRefreshGroups,
+    createGroup,
+    updateGroup,  // 🔥 NUEVO
+    deleteGroup,  // 🔥 NUEVO
+    addMember,    // 🔥 NUEVO
+    removeMember, // 🔥 NUEVO
+    searchGroups
+  } = useGroups();
+
   const conversationsRef = useRef({
     updateContactInConversations,
     removeContactFromConversations,
@@ -48,9 +69,12 @@ export const HomePage = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<GroupWithMembers | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [view, setView] = useState<'chats' | 'contacts'>('chats');
+  const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
+  const [isGroupInfoOpen, setIsGroupInfoOpen] = useState(false); // 🔥 NUEVO
+  const [view, setView] = useState<'chats' | 'groups' | 'contacts'>('chats');
 
   const [selectedContactStatus, setSelectedContactStatus] = useState<'online' | 'offline'>('offline');
   const [selectedContactLastSeen, setSelectedContactLastSeen] = useState<Date | null>(null);
@@ -68,7 +92,7 @@ export const HomePage = () => {
   useEffect(() => {
     const handleUserOnline = (data: { userId: number }) => {
       console.log(`🟢 Usuario ${data.userId} ahora está ONLINE`);
-      
+
       if (selectedContactId === data.userId) {
         console.log(`🎯 Actualizando contacto seleccionado ${data.userId} a ONLINE`);
         setSelectedContactStatus('online');
@@ -77,14 +101,14 @@ export const HomePage = () => {
           user: { ...prev.user, status: 'online' }
         }) : null);
       }
-      
+
       silentRefreshConversations();
       refreshContacts();
     };
 
     const handleUserOffline = (data: { userId: number }) => {
       console.log(`⚪ Usuario ${data.userId} ahora está OFFLINE`);
-      
+
       if (selectedContactId === data.userId) {
         console.log(`🎯 Actualizando contacto seleccionado ${data.userId} a OFFLINE`);
         setSelectedContactStatus('offline');
@@ -94,7 +118,7 @@ export const HomePage = () => {
           user: { ...prev.user, status: 'offline' }
         }) : null);
       }
-      
+
       silentRefreshConversations();
       refreshContacts();
     };
@@ -111,7 +135,7 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations, refreshContacts, selectedContactId]);
 
-  // 🔥 Listener para nuevos mensajes
+  // Listener para nuevos mensajes (chats 1-a-1)
   useEffect(() => {
     const handleNewMessageForList = () => {
       console.log('📬 Nuevo mensaje detectado en HomePage, actualizando lista...');
@@ -128,11 +152,10 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations]);
 
-  // 🔥 CORREGIDO: Listener para mensajes EDITADOS - CON TIMEOUT PARA ASEGURAR ACTUALIZACIÓN
+  // Listener para mensajes editados
   useEffect(() => {
     const handleMessageEditedForList = () => {
       console.log('✏️ Mensaje editado detectado en HomePage, actualizando lista en segundo plano...');
-      // Pequeña espera para asegurar que el backend ya actualizó
       setTimeout(() => {
         silentRefreshConversations();
       }, 500);
@@ -148,11 +171,10 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations]);
 
-  // 🔥 CORREGIDO: Listener para mensajes ELIMINADOS - CON TIMEOUT PARA ASEGURAR ACTUALIZACIÓN
+  // Listener para mensajes eliminados
   useEffect(() => {
     const handleMessageDeletedForList = () => {
       console.log('🗑️ Mensaje eliminado detectado en HomePage, actualizando lista en segundo plano...');
-      // Pequeña espera para asegurar que el backend ya actualizó
       setTimeout(() => {
         silentRefreshConversations();
       }, 500);
@@ -168,30 +190,83 @@ export const HomePage = () => {
     };
   }, [silentRefreshConversations]);
 
+  // Listeners para grupos
+  useEffect(() => {
+    const handleGroupNewMessage = () => {
+      console.log('📬 Nuevo mensaje de grupo detectado en HomePage');
+      silentRefreshGroups();
+    };
+
+    const handleGroupMessageEdited = () => {
+      console.log('✏️ Mensaje de grupo editado');
+      setTimeout(() => {
+        silentRefreshGroups();
+      }, 500);
+    };
+
+    const handleGroupMessageDeleted = () => {
+      console.log('🗑️ Mensaje de grupo eliminado');
+      setTimeout(() => {
+        silentRefreshGroups();
+      }, 500);
+    };
+
+    const handleGroupMemberAdded = () => {
+      console.log('👤 Miembro agregado al grupo');
+      refreshGroups();
+    };
+
+    const handleGroupMemberRemoved = () => {
+      console.log('🚫 Miembro removido del grupo');
+      refreshGroups();
+    };
+
+    socketService.onGroupNewMessage(handleGroupNewMessage);
+    socketService.onGroupMessageEdited(handleGroupMessageEdited);
+    socketService.onGroupMessageDeleted(handleGroupMessageDeleted);
+    socketService.onGroupMemberAdded(handleGroupMemberAdded);
+    socketService.onGroupMemberRemoved(handleGroupMemberRemoved);
+
+    return () => {
+      const socket = socketService.getSocket();
+      if (socket) {
+        socket.off('group:new-message', handleGroupNewMessage);
+        socket.off('group:message-edited', handleGroupMessageEdited);
+        socket.off('group:message-deleted', handleGroupMessageDeleted);
+        socket.off('group:member-added', handleGroupMemberAdded);
+        socket.off('group:member-removed', handleGroupMemberRemoved);
+      }
+    };
+  }, [silentRefreshGroups, refreshGroups]);
+
   const filteredContacts = typeof searchContacts === 'function'
     ? searchContacts(searchQuery) ?? []
     : [];
 
   const filteredConversations = conversations.filter((conv: Conversation) => {
     if (!searchQuery.trim()) return true;
-    
+
     const searchTerm = searchQuery.toLowerCase();
     const nickname = conv.contact.nickname?.toLowerCase() || '';
     const username = conv.contact.username?.toLowerCase() || '';
     const email = conv.contact.email?.toLowerCase() || '';
-    
-    return nickname.includes(searchTerm) || 
-           username.includes(searchTerm) || 
-           email.includes(searchTerm);
+
+    return nickname.includes(searchTerm) ||
+      username.includes(searchTerm) ||
+      email.includes(searchTerm);
   });
+
+  const filteredGroups = typeof searchGroups === 'function'
+    ? searchGroups(searchQuery)
+    : groups;
 
   const handleConversationClick = (conversation: Conversation) => {
     const contact: Contact = {
       id: conversation.contact.id,
       userId: conversation.contact.user_id,
       contactUserId: conversation.contact.user_id,
-      nickname: conversation.contact.has_contact 
-        ? conversation.contact.nickname 
+      nickname: conversation.contact.has_contact
+        ? conversation.contact.nickname
         : conversation.contact.email,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -206,14 +281,15 @@ export const HomePage = () => {
 
     setSelectedContact(contact);
     setSelectedContactId(conversation.contact.user_id);
-    
+    setSelectedGroup(null);
+
     setSelectedContactStatus(conversation.contact.is_online ? 'online' : 'offline');
     setSelectedContactLastSeen(
       conversation.contact.last_seen ? new Date(conversation.contact.last_seen) : null
     );
 
     if (window.innerWidth < 768) setIsSidebarOpen(false);
-    
+
     if (conversation.unread_count > 0) {
       setTimeout(() => {
         silentRefreshConversations();
@@ -224,16 +300,26 @@ export const HomePage = () => {
   const handleContactSelect = (contact: Contact) => {
     setSelectedContact(contact);
     setSelectedContactId(contact.user.id);
-    
+    setSelectedGroup(null);
+
     setSelectedContactStatus(contact.user.status);
-    
+
     setView('chats');
+    if (window.innerWidth < 768) setIsSidebarOpen(false);
+  };
+
+  const handleGroupClick = (group: GroupWithMembers) => {
+    setSelectedGroup(group);
+    setSelectedContact(null);
+    setSelectedContactId(null);
+
     if (window.innerWidth < 768) setIsSidebarOpen(false);
   };
 
   const handleBackToChats = () => {
     setSelectedContact(null);
     setSelectedContactId(null);
+    setSelectedGroup(null);
     setSelectedContactStatus('offline');
     setSelectedContactLastSeen(null);
     setIsSidebarOpen(true);
@@ -245,6 +331,14 @@ export const HomePage = () => {
     } else {
       silentRefreshConversations();
     }
+  };
+
+  const handleGroupMessageSent = () => {
+    silentRefreshGroups();
+  };
+
+  const handleCreateGroup = async (data: { name: string; description?: string; memberIds: number[] }) => {
+    return await createGroup(data);
   };
 
   const handleContactUpdated = (contactUserId: number, nickname: string) => {
@@ -296,7 +390,7 @@ export const HomePage = () => {
     }
   };
 
-  const isLoading = view === 'chats' ? isLoadingConversations : isLoadingContacts;
+  const isLoading = view === 'chats' ? isLoadingConversations : view === 'groups' ? isLoadingGroups : isLoadingContacts;
 
   return (
     <>
@@ -331,30 +425,41 @@ export const HomePage = () => {
           <div className="flex border-b border-gray-200">
             <button
               onClick={() => setView('chats')}
-              className={`flex-1 py-3 text-sm font-medium transition ${
-                view === 'chats'
+              className={`flex-1 py-3 text-sm font-medium transition ${view === 'chats'
                   ? 'text-whatsapp-green border-b-2 border-whatsapp-green'
                   : 'text-gray-500 hover:text-gray-700'
-              }`}
+                }`}
             >
               💬 Chats {conversations.length > 0 && `(${conversations.length})`}
             </button>
             <button
-              onClick={() => setView('contacts')}
-              className={`flex-1 py-3 text-sm font-medium transition ${
-                view === 'contacts'
+              onClick={() => setView('groups')}
+              className={`flex-1 py-3 text-sm font-medium transition ${view === 'groups'
                   ? 'text-whatsapp-green border-b-2 border-whatsapp-green'
                   : 'text-gray-500 hover:text-gray-700'
-              }`}
+                }`}
             >
-              👥 Contactos {contacts.length > 0 && `(${contacts.length})`}
+              👥 Grupos {groups.length > 0 && `(${groups.length})`}
+            </button>
+            <button
+              onClick={() => setView('contacts')}
+              className={`flex-1 py-3 text-sm font-medium transition ${view === 'contacts'
+                  ? 'text-whatsapp-green border-b-2 border-whatsapp-green'
+                  : 'text-gray-500 hover:text-gray-700'
+                }`}
+            >
+              📞 Contactos {contacts.length > 0 && `(${contacts.length})`}
             </button>
           </div>
 
           <div className="p-3 border-b border-gray-200">
             <input
               type="text"
-              placeholder={view === 'chats' ? 'Buscar chat...' : 'Buscar contacto...'}
+              placeholder={
+                view === 'chats' ? 'Buscar chat...' :
+                  view === 'groups' ? 'Buscar grupo...' :
+                    'Buscar contacto...'
+              }
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp-green"
@@ -368,31 +473,29 @@ export const HomePage = () => {
                 onConversationClick={handleConversationClick}
                 selectedConversationId={selectedContactId}
               />
+            ) : view === 'groups' ? (
+              isLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <svg className="animate-spin h-6 w-6 mr-2 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                  <span className="text-gray-600">Cargando grupos...</span>
+                </div>
+              ) : (
+                <GroupList
+                  groups={filteredGroups}
+                  onGroupClick={handleGroupClick}
+                  selectedGroupId={selectedGroup?.id ?? null}
+                />
+              )
             ) : isLoading ? (
               <div className="flex items-center justify-center py-8">
-                <svg
-                  className="animate-spin h-6 w-6 mr-2 text-gray-600"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8v8z"
-                  />
+                <svg className="animate-spin h-6 w-6 mr-2 text-gray-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
                 </svg>
-                <span className="text-gray-600">
-                  Cargando contactos...
-                </span>
+                <span className="text-gray-600">Cargando contactos...</span>
               </div>
             ) : (
               <ContactList
@@ -400,8 +503,8 @@ export const HomePage = () => {
                   Array.isArray(filteredContacts) && filteredContacts.length > 0
                     ? filteredContacts
                     : Array.isArray(contacts)
-                    ? contacts
-                    : []
+                      ? contacts
+                      : []
                 }
                 onContactClick={handleContactSelect}
                 onDeleteContact={handleDeleteContact}
@@ -415,11 +518,25 @@ export const HomePage = () => {
               <button
                 onClick={() => setIsAddModalOpen(true)}
                 disabled={isLoading}
-                className={`p-4 rounded-full shadow-lg transition ${
-                  isLoading
+                className={`p-4 rounded-full shadow-lg transition ${isLoading
                     ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
                     : 'bg-whatsapp-green text-white hover:bg-whatsapp-green-dark'
-                }`}
+                  }`}
+              >
+                +
+              </button>
+            </div>
+          )}
+
+          {view === 'groups' && (
+            <div className="absolute bottom-6 right-6">
+              <button
+                onClick={() => setIsCreateGroupModalOpen(true)}
+                disabled={isLoading}
+                className={`p-4 rounded-full shadow-lg transition ${isLoading
+                    ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                    : 'bg-whatsapp-green text-white hover:bg-whatsapp-green-dark'
+                  }`}
               >
                 +
               </button>
@@ -429,7 +546,7 @@ export const HomePage = () => {
 
         <div
           className={`
-            ${!isSidebarOpen || selectedContact ? 'flex' : 'hidden md:flex'}
+            ${!isSidebarOpen || selectedContact || selectedGroup ? 'flex' : 'hidden md:flex'}
             flex-1 flex-col w-full
           `}
         >
@@ -442,6 +559,13 @@ export const HomePage = () => {
               contactLastSeen={selectedContactLastSeen}
               onBack={handleBackToChats}
               onMessageSent={handleMessageSent}
+            />
+          ) : selectedGroup ? (
+            <GroupChatWindow
+              group={selectedGroup}
+              onBack={handleBackToChats}
+              onMessageSent={handleGroupMessageSent}
+              onOpenInfo={() => setIsGroupInfoOpen(true)} // 🔥 CAMBIO AQUÍ
             />
           ) : (
             <>
@@ -462,14 +586,18 @@ export const HomePage = () => {
               <div className="flex-1 bg-[#e5ddd5] p-4 overflow-y-auto">
                 <div className="flex items-center justify-center h-full text-center">
                   <div>
-                    <div className="text-6xl mb-4">💬</div>
+                    <div className="text-6xl mb-4">
+                      {view === 'groups' ? '👥' : '💬'}
+                    </div>
                     <h3 className="text-xl font-semibold text-gray-700 mb-2">
                       WhatsApp Web
                     </h3>
                     <p className="text-gray-500">
-                      {view === 'chats' 
+                      {view === 'chats'
                         ? 'Selecciona una conversación para comenzar'
-                        : 'Selecciona un contacto para iniciar un chat'
+                        : view === 'groups'
+                          ? 'Selecciona un grupo para comenzar'
+                          : 'Selecciona un contacto para iniciar un chat'
                       }
                     </p>
                   </div>
@@ -520,6 +648,64 @@ export const HomePage = () => {
           refreshConversations();
         }}
       />
+
+      <CreateGroupModal
+        isOpen={isCreateGroupModalOpen}
+        onClose={() => setIsCreateGroupModalOpen(false)}
+        onGroupCreated={() => {
+          refreshGroups();
+        }}
+        onCreate={handleCreateGroup}
+        contacts={contacts}
+        isLoadingContacts={isLoadingContacts}
+      />
+
+      {/* 🔥 NUEVO: Panel de información del grupo */}
+      {selectedGroup && (
+        <GroupInfoPanel
+          isOpen={isGroupInfoOpen}
+          onClose={() => setIsGroupInfoOpen(false)}
+          group={selectedGroup}
+          contacts={contacts}
+          onUpdateGroup={async (groupId, data) => {
+            const result = await updateGroup(groupId, data);
+            if (result.success) {
+              refreshGroups();
+            }
+            return result;
+          }}
+          onAddMember={async (groupId, userId) => {
+            const result = await addMember(groupId, userId);
+            if (result.success) {
+              refreshGroups();
+            }
+            return result;
+          }}
+          onRemoveMember={async (groupId, userId) => {
+            const result = await removeMember(groupId, userId);
+            if (result.success) {
+              refreshGroups();
+            }
+            return result;
+          }}
+          onLeaveGroup={async (groupId) => {
+            const result = await removeMember(groupId, user!.id);
+            if (result.success) {
+              setSelectedGroup(null);
+              refreshGroups();
+            }
+            return result;
+          }}
+          onDeleteGroup={async (groupId) => {
+            const result = await deleteGroup(groupId);
+            if (result.success) {
+              setSelectedGroup(null);
+              refreshGroups();
+            }
+            return result;
+          }}
+        />
+      )}
     </>
   );
 };

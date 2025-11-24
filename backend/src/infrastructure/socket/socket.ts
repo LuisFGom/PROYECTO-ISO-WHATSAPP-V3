@@ -6,6 +6,8 @@ import { MessageRepository } from '../../domain/repositories/message.repository'
 import { ConversationRepository } from '../../domain/repositories/conversation.repository';
 import { MySQLUserRepository } from '../database/repositories/MySQLUserRepository';
 import { ChatService } from '../../application/services/chat.service';
+import { GroupService } from '../../application/services/group.service'; // 🔥 NUEVO
+import { GroupRepository } from '../repositories/group.repository'; // 🔥 NUEVO
 import { database } from '../database/mysql/connection';
 import { UserStatus } from '../../shared/types/user.types';
 
@@ -13,6 +15,7 @@ export class SocketService {
   private io: Server;
   private connectedUsers: Map<number, string> = new Map();
   private chatService: ChatService;
+  private groupService: GroupService; // 🔥 NUEVO
   private userRepository: MySQLUserRepository;
 
   constructor(httpServer: HTTPServer) {
@@ -35,8 +38,11 @@ export class SocketService {
     const pool = database.getPool();
     const messageRepository = new MessageRepository(pool);
     const conversationRepository = new ConversationRepository(pool);
+    const groupRepository = new GroupRepository(pool); // 🔥 NUEVO
+    
     this.userRepository = new MySQLUserRepository();
     this.chatService = new ChatService(messageRepository, conversationRepository);
+    this.groupService = new GroupService(groupRepository); // 🔥 NUEVO
 
     this.initialize();
   }
@@ -132,7 +138,6 @@ export class SocketService {
         }
       });
 
-      // 🔥 CORREGIDO: Editar mensaje con notificación a AMBOS usuarios
       socket.on('chat:edit-message', async (data: {
         messageId: number;
         newContent: string;
@@ -152,10 +157,8 @@ export class SocketService {
 
           callback({ success: true, message: updatedMessage });
 
-          // 🔥 CRÍTICO: Notificar al EMISOR (quien editó) para actualizar su lista
           socket.emit('chat:message-edited', updatedMessage);
 
-          // 🔥 Notificar al RECEPTOR (el otro usuario)
           const recipientId = updatedMessage.sender_id === userId 
             ? updatedMessage.receiver_id 
             : updatedMessage.sender_id;
@@ -293,6 +296,314 @@ export class SocketService {
           callback({ success: false, error: error.message });
         }
       });
+
+      // ========== 🔥 EVENTOS DE GRUPOS ==========
+
+      socket.on('group:send-message', async (data: {
+        groupId: number;
+        content: string;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          const message = await this.groupService.sendGroupMessage({
+            groupId: data.groupId,
+            senderId: userId,
+            content: data.content
+          });
+
+          callback({ success: true, message });
+
+          const members = await this.groupService.getGroupMembers(data.groupId, userId);
+          
+          members.forEach(member => {
+            if (member.userId !== userId) {
+              const memberSocketId = this.connectedUsers.get(member.userId);
+              if (memberSocketId) {
+                this.io.to(memberSocketId).emit('group:new-message', {
+                  ...message,
+                  groupId: data.groupId
+                });
+              }
+            }
+          });
+
+          console.log(`💬 Mensaje de grupo enviado: ${userId} -> Grupo ${data.groupId}`);
+        } catch (error: any) {
+          console.error('❌ Error al enviar mensaje de grupo:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:edit-message', async (data: {
+        messageId: number;
+        newContent: string;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          const updatedMessage = await this.groupService.editGroupMessage(
+            data.messageId,
+            userId,
+            data.newContent
+          );
+
+          callback({ success: true, message: updatedMessage });
+
+          const members = await this.groupService.getGroupMembers(updatedMessage.groupId, userId);
+          
+          members.forEach(member => {
+            const memberSocketId = this.connectedUsers.get(member.userId);
+            if (memberSocketId) {
+              this.io.to(memberSocketId).emit('group:message-edited', updatedMessage);
+            }
+          });
+
+          console.log(`✏️ Mensaje de grupo ${data.messageId} editado por usuario ${userId}`);
+        } catch (error: any) {
+          console.error('❌ Error al editar mensaje de grupo:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:delete-message', async (data: {
+        messageId: number;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          const [msgRows]: any = await database.getPool().query(
+            'SELECT group_id FROM group_messages WHERE id = ?',
+            [data.messageId]
+          );
+
+          if (msgRows.length === 0) {
+            return callback({ success: false, error: 'Mensaje no encontrado' });
+          }
+
+          const groupId = msgRows[0].group_id;
+
+          await this.groupService.deleteGroupMessage(data.messageId, userId, true);
+
+          callback({ success: true });
+
+          const members = await this.groupService.getGroupMembers(groupId, userId);
+          
+          members.forEach(member => {
+            const memberSocketId = this.connectedUsers.get(member.userId);
+            if (memberSocketId) {
+              this.io.to(memberSocketId).emit('group:message-deleted', {
+                messageId: data.messageId,
+                groupId
+              });
+            }
+          });
+
+          console.log(`🗑️ Mensaje de grupo ${data.messageId} eliminado por usuario ${userId}`);
+        } catch (error: any) {
+          console.error('❌ Error al eliminar mensaje de grupo:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:load-history', async (data: {
+        groupId: number;
+        limit?: number;
+        offset?: number;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          const limit = data.limit || 50;
+          const offset = data.offset || 0;
+
+          console.log(`📜 Cargando historial de grupo: groupId=${data.groupId}, userId=${userId}`);
+
+          const messages = await this.groupService.getGroupMessages(
+            data.groupId,
+            userId,
+            limit,
+            offset
+          );
+
+          console.log(`✅ Historial de grupo cargado: ${messages.length} mensajes`);
+          callback({ success: true, messages });
+        } catch (error: any) {
+          console.error('❌ Error al cargar historial de grupo:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:mark-as-read', async (data: {
+        groupMessageId: number;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          await this.groupService.markGroupMessageAsRead(data.groupMessageId, userId);
+
+          callback({ success: true });
+        } catch (error: any) {
+          console.error('❌ Error al marcar mensaje de grupo como leído:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:add-member', async (data: {
+        groupId: number;
+        userIdToAdd: number;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          const member = await this.groupService.addMember({
+            groupId: data.groupId,
+            userId: data.userIdToAdd,
+            addedByUserId: userId
+          });
+
+          callback({ success: true, member });
+
+          const addedUserSocketId = this.connectedUsers.get(data.userIdToAdd);
+          if (addedUserSocketId) {
+            this.io.to(addedUserSocketId).emit('group:member-added', {
+              groupId: data.groupId,
+              member
+            });
+          }
+
+          const members = await this.groupService.getGroupMembers(data.groupId, userId);
+          members.forEach(m => {
+            if (m.userId !== data.userIdToAdd) {
+              const memberSocketId = this.connectedUsers.get(m.userId);
+              if (memberSocketId) {
+                this.io.to(memberSocketId).emit('group:member-added', {
+                  groupId: data.groupId,
+                  member
+                });
+              }
+            }
+          });
+
+          console.log(`👤 Usuario ${data.userIdToAdd} agregado al grupo ${data.groupId}`);
+        } catch (error: any) {
+          console.error('❌ Error al agregar miembro:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:remove-member', async (data: {
+        groupId: number;
+        userIdToRemove: number;
+      }, callback) => {
+        try {
+          const userId = this.getUserIdBySocketId(socket.id);
+          
+          if (!userId) {
+            return callback({ success: false, error: 'No autenticado' });
+          }
+
+          await this.groupService.removeMember({
+            groupId: data.groupId,
+            userId: data.userIdToRemove,
+            removedByUserId: userId
+          });
+
+          callback({ success: true });
+
+          const removedUserSocketId = this.connectedUsers.get(data.userIdToRemove);
+          if (removedUserSocketId) {
+            this.io.to(removedUserSocketId).emit('group:member-removed', {
+              groupId: data.groupId,
+              userId: data.userIdToRemove
+            });
+          }
+
+          const members = await this.groupService.getGroupMembers(data.groupId, userId);
+          members.forEach(m => {
+            const memberSocketId = this.connectedUsers.get(m.userId);
+            if (memberSocketId) {
+              this.io.to(memberSocketId).emit('group:member-removed', {
+                groupId: data.groupId,
+                userId: data.userIdToRemove
+              });
+            }
+          });
+
+          console.log(`🚫 Usuario ${data.userIdToRemove} removido del grupo ${data.groupId}`);
+        } catch (error: any) {
+          console.error('❌ Error al remover miembro:', error);
+          callback({ success: false, error: error.message });
+        }
+      });
+
+      socket.on('group:typing-start', (data: { groupId: number }) => {
+        const userId = this.getUserIdBySocketId(socket.id);
+        if (!userId) return;
+
+        this.groupService.getGroupMembers(data.groupId, userId)
+          .then(members => {
+            members.forEach(member => {
+              if (member.userId !== userId) {
+                const memberSocketId = this.connectedUsers.get(member.userId);
+                if (memberSocketId) {
+                  this.io.to(memberSocketId).emit('group:typing-start', {
+                    groupId: data.groupId,
+                    userId
+                  });
+                }
+              }
+            });
+          })
+          .catch(err => console.error('Error en typing-start:', err));
+      });
+
+      socket.on('group:typing-stop', (data: { groupId: number }) => {
+        const userId = this.getUserIdBySocketId(socket.id);
+        if (!userId) return;
+
+        this.groupService.getGroupMembers(data.groupId, userId)
+          .then(members => {
+            members.forEach(member => {
+              if (member.userId !== userId) {
+                const memberSocketId = this.connectedUsers.get(member.userId);
+                if (memberSocketId) {
+                  this.io.to(memberSocketId).emit('group:typing-stop', {
+                    groupId: data.groupId,
+                    userId
+                  });
+                }
+              }
+            });
+          })
+          .catch(err => console.error('Error en typing-stop:', err));
+      });
+
+      // ========== FIN DE EVENTOS DE GRUPOS ==========
 
       socket.on('disconnect', async () => {
         console.log('❌ Usuario desconectado:', socket.id);
